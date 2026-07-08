@@ -354,6 +354,14 @@ const sanitizeData = (input) => ({
     : [],
 });
 
+// ── Tradutores app <-> linhas das tabelas (arquitetura 100% online, por-linha) ──
+const txToRow    = (t, ws) => ({ id:t.id, workspace_id:ws, tipo:t.tipo, valor:Number(t.valor)||0, categoria:t.categoria||"", descricao:t.descricao||"", pagamento:t.pagamento||"", pessoa:t.pessoa||"", data:t.data||todayISO(), necessario:t.necessario!==false, foto:!!t.foto });
+const rowToTx    = (r) => ({ id:r.id, tipo:r.tipo, valor:Number(r.valor)||0, categoria:r.categoria||"", descricao:r.descricao||"", pagamento:r.pagamento||"", pessoa:r.pessoa||"", data:r.data||"", necessario:r.necessario!==false, foto:!!r.foto });
+const goalToRow  = (g, ws) => ({ id:g.id, workspace_id:ws, nome:g.nome||"", emoji:g.emoji||"🎯", alvo:Number(g.alvo)||0, saved:Number(g.saved)||0, prazo:g.prazo||null, deposits:g.deposits||[] });
+const rowToGoal  = (r) => ({ id:r.id, nome:r.nome||"", emoji:r.emoji||"🎯", alvo:Number(r.alvo)||0, saved:Number(r.saved)||0, prazo:r.prazo||"", deposits:Array.isArray(r.deposits)?r.deposits:[] });
+const fixedToRow = (f, ws) => ({ id:f.id, workspace_id:ws, nome:f.nome||"", valor:Number(f.valor)||0, dia:Number(f.dia)||1, categoria:f.categoria||"" });
+const rowToFixed = (r) => ({ id:r.id, nome:r.nome||"", valor:Number(r.valor)||0, dia:Number(r.dia)||1, categoria:r.categoria||"" });
+
 // Junta categorias base + as criadas pelo admin (custom vêm antes de "Outros").
 function catsForTipo(tipo, custom=[]) {
   const base = tipo==="ganho" ? CAT_GANHO : CAT_GASTO;
@@ -787,18 +795,23 @@ export default function App() {
   const showToast = useCallback((msg)=>{ setToast(msg); setTimeout(()=>setToast(null),2600); },[]);
   const persistAuthState = useCallback((next)=>{ setAuth(next); persistAuth(next); },[]);
 
-  const saveRemoteState = useCallback(async (workspaceId, userId, next) => {
-    if (!SUPABASE_ENABLED || !supabase || !workspaceId || !userId) return { ok:false };
-    const clean = sanitizeData(next);
-    const { error } = await supabase
-      .from("finance_app_state")
-      .upsert({
-        workspace_id: workspaceId,
-        data: clean,
-        updated_by: userId,
-        updated_at: new Date().toISOString(),
-      }, { onConflict:"workspace_id" });
-    return error ? { ok:false, message:error.message } : { ok:true };
+  // Lê os dados do workspace das 5 tabelas por-linha e monta o objeto do app.
+  const loadOnlineData = useCallback(async (workspaceId) => {
+    if (!SUPABASE_ENABLED || !supabase || !workspaceId) return DEFAULT_DATA;
+    const [tx, goals, fixed, cats, avatars] = await Promise.all([
+      supabase.from("finance_tx").select("*").eq("workspace_id", workspaceId).order("created_at", { ascending:false }),
+      supabase.from("finance_goals").select("*").eq("workspace_id", workspaceId).order("created_at", { ascending:false }),
+      supabase.from("finance_fixed").select("*").eq("workspace_id", workspaceId).order("created_at", { ascending:false }),
+      supabase.from("finance_categories").select("*").eq("workspace_id", workspaceId),
+      supabase.from("finance_avatars").select("*").eq("workspace_id", workspaceId),
+    ]);
+    return sanitizeData({
+      transactions: (tx.data||[]).map(rowToTx),
+      goals: (goals.data||[]).map(rowToGoal),
+      fixedExpenses: (fixed.data||[]).map(rowToFixed),
+      customCategories: (cats.data||[]).map(c=>({ name:c.name, emoji:c.emoji, tipo:c.tipo })),
+      avatars: Object.fromEntries((avatars.data||[]).map(a=>[a.person, a.image])),
+    });
   },[]);
 
   const loadOnlineMembers = useCallback(async (workspaceId) => {
@@ -865,53 +878,22 @@ export default function App() {
     setOnlineWorkspace(workspace);
     await loadOnlineMembers(member.workspace_id);
 
-    const { data: stateRow, error: stateError } = await supabase
-      .from("finance_app_state")
-      .select("data,updated_at")
-      .eq("workspace_id", member.workspace_id)
-      .maybeSingle();
-
-    if (stateError) {
-      setSyncStatus(`Dados: ${stateError.message}`);
-      setOnlineLoading(false);
-      return;
-    }
-
-    const remoteData = sanitizeData(stateRow?.data);
-    const localData = sanitizeData(localSeed);
-    const shouldUploadLocal = (!stateRow || !hasFinancialData(remoteData)) && hasFinancialData(localData);
-    const nextData = shouldUploadLocal ? localData : remoteData;
-
+    const nextData = await loadOnlineData(member.workspace_id);
     setData(nextData);
     persistAll(nextData);
-
-    if (shouldUploadLocal) {
-      const uploaded = await saveRemoteState(member.workspace_id, user.id, nextData);
-      setSyncStatus(uploaded.ok ? "Dados deste aparelho enviados ao Supabase." : `Entrou, mas não subiu o backup: ${uploaded.message}`);
-    } else {
-      setSyncStatus(`Sincronizado${stateRow?.updated_at ? ` em ${new Date(stateRow.updated_at).toLocaleString("pt-BR")}` : ""}.`);
-    }
-
+    setSyncStatus("Sincronizado ✓");
     setLastSyncedAt(new Date().toISOString());
     setOnlineLoading(false);
-  },[loadOnlineMembers, saveRemoteState]);
+  },[loadOnlineMembers, loadOnlineData]);
 
-  const persist = useCallback((next)=>{
-    const clean = sanitizeData(next);
-    setData(clean);
-    persistAll(clean);
-    if (SUPABASE_ENABLED && onlineWorkspace?.id && onlineUser?.id) {
-      setSyncStatus("Salvando no Supabase...");
-      saveRemoteState(onlineWorkspace.id, onlineUser.id, clean).then((result)=>{
-        if (result.ok) {
-          setLastSyncedAt(new Date().toISOString());
-          setSyncStatus("Salvo no Supabase.");
-        } else if (result.message) {
-          setSyncStatus(`Salvo localmente. Supabase: ${result.message}`);
-        }
-      });
-    }
-  },[onlineWorkspace?.id, onlineUser?.id, saveRemoteState]);
+  // Grava só local (state + cache do aparelho). O servidor é atualizado por-linha nos handlers.
+  const patchData = useCallback((updater)=>{
+    setData(prev=>{
+      const next = sanitizeData(typeof updater==="function" ? updater(prev) : updater);
+      persistAll(next);
+      return next;
+    });
+  },[]);
 
   useEffect(()=>{
     let alive = true;
@@ -985,6 +967,40 @@ export default function App() {
       document.removeEventListener("visibilitychange", tick);
     };
   },[onlineWorkspace?.id, loadOnlineMembers]);
+
+  // REALTIME: escuta mudanças nas tabelas do workspace e reflete na tela ao vivo
+  // (o outro aparelho vê o lançamento/meta na hora, sem F5). Idempotente por id.
+  useEffect(()=>{
+    if (!SUPABASE_ENABLED || !supabase || !onlineWorkspace?.id) return undefined;
+    const ws = onlineWorkspace.id;
+    const applyArr = (key, payload, mapper) => {
+      setData(prev=>{
+        let arr = prev[key] || [];
+        if (payload.eventType==="DELETE") {
+          const oldId = payload.old?.id;
+          arr = arr.filter(x=>x.id!==oldId);
+        } else {
+          const item = mapper(payload.new);
+          arr = arr.some(x=>x.id===item.id) ? arr.map(x=>x.id===item.id?item:x) : [item, ...arr];
+        }
+        const next = {...prev, [key]:arr};
+        persistAll(next);
+        return next;
+      });
+    };
+    const reloadSlice = async () => {
+      const fresh = await loadOnlineData(ws);
+      setData(prev=>{ const next={...prev, customCategories:fresh.customCategories, avatars:fresh.avatars}; persistAll(next); return next; });
+    };
+    const ch = supabase.channel(`ws-data-${ws}`)
+      .on("postgres_changes", {event:"*",schema:"public",table:"finance_tx",filter:`workspace_id=eq.${ws}`}, p=>applyArr("transactions",p,rowToTx))
+      .on("postgres_changes", {event:"*",schema:"public",table:"finance_goals",filter:`workspace_id=eq.${ws}`}, p=>applyArr("goals",p,rowToGoal))
+      .on("postgres_changes", {event:"*",schema:"public",table:"finance_fixed",filter:`workspace_id=eq.${ws}`}, p=>applyArr("fixedExpenses",p,rowToFixed))
+      .on("postgres_changes", {event:"*",schema:"public",table:"finance_categories",filter:`workspace_id=eq.${ws}`}, reloadSlice)
+      .on("postgres_changes", {event:"*",schema:"public",table:"finance_avatars",filter:`workspace_id=eq.${ws}`}, reloadSlice)
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  },[onlineWorkspace?.id, loadOnlineData]);
 
   const currentUser = useMemo(
     ()=>auth.users.find(u=>u.id===session?.userId) || null,
@@ -1224,54 +1240,91 @@ export default function App() {
     showToast("Acesso removido");
   },[auth,currentUser,persistAuthState,showToast]);
 
+  const wsId = onlineWorkspace?.id;
+  const online = SUPABASE_ENABLED && supabase && wsId;
+
   const addTx = useCallback(async (tx, foto) => {
     const id = uid();
     if (foto) await savePhoto(id, foto);
-    persist({...data, transactions:[{...tx, id, foto:!!foto}, ...data.transactions]});
+    const row = {...tx, id, foto:!!foto};
+    patchData(d=>({...d, transactions:[row, ...d.transactions]}));
     showToast("Lançamento salvo ✓");
-  },[data,persist,showToast]);
+    if (online) { const {error}=await supabase.from("finance_tx").insert(txToRow(row, wsId)); if(error) showToast("⚠ Falha ao salvar online"); }
+  },[patchData,online,wsId,showToast]);
 
   const updateTx = useCallback(async (tx, foto, fotoRemovida) => {
     if (foto) { await savePhoto(tx.id, foto); tx.foto = true; }
     if (fotoRemovida) { removePhoto(tx.id); tx.foto = false; }
-    persist({...data, transactions:data.transactions.map(t=>t.id===tx.id?tx:t)});
+    patchData(d=>({...d, transactions:d.transactions.map(t=>t.id===tx.id?tx:t)}));
     showToast("Atualizado ✓");
-  },[data,persist,showToast]);
+    if (online) await supabase.from("finance_tx").update(txToRow(tx, wsId)).eq("id", tx.id);
+  },[patchData,online,wsId,showToast]);
 
-  const deleteTx = useCallback((id) => {
+  const deleteTx = useCallback(async (id) => {
     removePhoto(id);
-    persist({...data, transactions:data.transactions.filter(t=>t.id!==id)});
+    patchData(d=>({...d, transactions:d.transactions.filter(t=>t.id!==id)}));
     showToast("Excluído");
-  },[data,persist,showToast]);
+    if (online) await supabase.from("finance_tx").delete().eq("id", id);
+  },[patchData,online,wsId,showToast]);
 
   const setAvatar = useCallback(async (name, file) => {
     const small = await compressImage(file, 220, 0.8);
-    persist({...data, avatars:{...data.avatars,[name]:small}});
+    patchData(d=>({...d, avatars:{...d.avatars,[name]:small}}));
     showToast(`Foto de ${name} atualizada ✓`);
-  },[data,persist,showToast]);
+    if (online) await supabase.from("finance_avatars").upsert({workspace_id:wsId, person:name, image:small, updated_at:new Date().toISOString()}, {onConflict:"workspace_id,person"});
+  },[patchData,online,wsId,showToast]);
 
-  const addGoal    = useCallback((g)=>{ persist({...data,goals:[...data.goals,{...g,id:uid()}]}); showToast("Meta criada ✓"); },[data,persist,showToast]);
-  const updateGoal = useCallback((g)=>{ persist({...data,goals:data.goals.map(x=>x.id===g.id?g:x)}); },[data,persist]);
-  const deleteGoal = useCallback((id)=>{ persist({...data,goals:data.goals.filter(g=>g.id!==id)}); },[data,persist]);
-  const addFixed   = useCallback((f)=>{ persist({...data,fixedExpenses:[...data.fixedExpenses,{...f,id:uid()}]}); showToast("Conta fixa salva ✓"); },[data,persist,showToast]);
-  const deleteFixed= useCallback((id)=>{ persist({...data,fixedExpenses:data.fixedExpenses.filter(f=>f.id!==id)}); },[data,persist]);
-  const importData = useCallback((next)=>{
+  const addGoal = useCallback(async (g)=>{
+    const goal = {...g, id:uid(), saved:Number(g.saved||0), deposits:g.deposits||[]};
+    patchData(d=>({...d, goals:[...d.goals, goal]}));
+    showToast("Meta criada ✓");
+    if (online) await supabase.from("finance_goals").insert(goalToRow(goal, wsId));
+  },[patchData,online,wsId,showToast]);
+  const updateGoal = useCallback(async (g)=>{
+    patchData(d=>({...d, goals:d.goals.map(x=>x.id===g.id?g:x)}));
+    if (online) await supabase.from("finance_goals").update(goalToRow(g, wsId)).eq("id", g.id);
+  },[patchData,online,wsId]);
+  const deleteGoal = useCallback(async (id)=>{
+    patchData(d=>({...d, goals:d.goals.filter(g=>g.id!==id)}));
+    if (online) await supabase.from("finance_goals").delete().eq("id", id);
+  },[patchData,online,wsId]);
+  const addFixed = useCallback(async (f)=>{
+    const fixed = {...f, id:uid(), valor:Number(f.valor)||0, dia:Number(f.dia)||1};
+    patchData(d=>({...d, fixedExpenses:[...d.fixedExpenses, fixed]}));
+    showToast("Conta fixa salva ✓");
+    if (online) await supabase.from("finance_fixed").insert(fixedToRow(fixed, wsId));
+  },[patchData,online,wsId,showToast]);
+  const deleteFixed = useCallback(async (id)=>{
+    patchData(d=>({...d, fixedExpenses:d.fixedExpenses.filter(f=>f.id!==id)}));
+    if (online) await supabase.from("finance_fixed").delete().eq("id", id);
+  },[patchData,online,wsId]);
+
+  const importData = useCallback(async (next)=>{
     const safe = sanitizeData(next);
-    persist(safe);
+    patchData(safe);
     showToast("Backup importado ✓");
-  },[persist,showToast]);
+    if (online) {
+      if (safe.transactions.length) await supabase.from("finance_tx").upsert(safe.transactions.map(t=>txToRow(t, wsId)));
+      if (safe.goals.length) await supabase.from("finance_goals").upsert(safe.goals.map(g=>goalToRow(g, wsId)));
+      if (safe.fixedExpenses.length) await supabase.from("finance_fixed").upsert(safe.fixedExpenses.map(f=>fixedToRow(f, wsId)));
+      if (safe.customCategories.length) await supabase.from("finance_categories").upsert(safe.customCategories.map(c=>({workspace_id:wsId, name:c.name, emoji:c.emoji, tipo:c.tipo})));
+      const avEntries = Object.entries(safe.avatars||{});
+      if (avEntries.length) await supabase.from("finance_avatars").upsert(avEntries.map(([person,image])=>({workspace_id:wsId, person, image})));
+    }
+  },[patchData,online,wsId,showToast]);
 
-  // Categorias criadas pelo admin (guardadas no estado do workspace, sincronizam online).
+  // Categorias criadas pelo admin (por-linha em finance_categories; PK = workspace+name+tipo).
   const addCategory = useCallback((name, emoji, tipo)=>{
     const clean = String(name||"").trim();
     if (!clean) return { ok:false, message:"Dê um nome à categoria." };
     const jaExiste = catsForTipo(tipo, data.customCategories).some(c=>c.toLowerCase()===clean.toLowerCase());
     if (jaExiste) return { ok:false, message:"Essa categoria já existe." };
     const nova = { name:clean, emoji:(emoji||"📦").trim()||"📦", tipo:tipo==="ganho"?"ganho":"gasto" };
-    persist({...data, customCategories:[...data.customCategories, nova]});
+    patchData(d=>({...d, customCategories:[...d.customCategories, nova]}));
     showToast("Categoria criada ✓");
+    if (online) supabase.from("finance_categories").insert({workspace_id:wsId, name:nova.name, emoji:nova.emoji, tipo:nova.tipo});
     return { ok:true };
-  },[data,persist,showToast]);
+  },[data.customCategories,patchData,online,wsId,showToast]);
 
   const updateCategory = useCallback((oldName, tipo, patch)=>{
     const nextName = patch.name!==undefined ? String(patch.name).trim() : oldName;
@@ -1280,24 +1333,32 @@ export default function App() {
       const colide = catsForTipo(tipo, data.customCategories).some(c=>c.toLowerCase()===nextName.toLowerCase());
       if (colide) return { ok:false, message:"Já existe uma categoria com esse nome." };
     }
-    const customCategories = data.customCategories.map(c=>
-      (c.name===oldName && c.tipo===tipo)
-        ? { ...c, name:nextName, emoji:(patch.emoji!==undefined?(patch.emoji||"📦"):c.emoji) }
-        : c
-    );
-    // Renomeia também nos lançamentos já feitos, pra não "perder" o histórico.
-    const transactions = nextName!==oldName
-      ? data.transactions.map(t=>t.categoria===oldName ? {...t, categoria:nextName} : t)
-      : data.transactions;
-    persist({...data, customCategories, transactions});
+    const antiga = data.customCategories.find(c=>c.name===oldName && c.tipo===tipo);
+    const novoEmoji = patch.emoji!==undefined ? (patch.emoji||"📦") : (antiga?.emoji||"📦");
+    patchData(d=>({
+      ...d,
+      customCategories: d.customCategories.map(c=>(c.name===oldName && c.tipo===tipo) ? { ...c, name:nextName, emoji:novoEmoji } : c),
+      transactions: nextName!==oldName ? d.transactions.map(t=>t.categoria===oldName ? {...t, categoria:nextName} : t) : d.transactions,
+    }));
     showToast("Categoria atualizada ✓");
+    if (online) {
+      if (nextName!==oldName) {
+        // PK muda com o nome: apaga a linha antiga e cria a nova, e renomeia nos lançamentos.
+        supabase.from("finance_categories").delete().eq("workspace_id",wsId).eq("name",oldName).eq("tipo",tipo)
+          .then(()=>supabase.from("finance_categories").insert({workspace_id:wsId, name:nextName, emoji:novoEmoji, tipo}));
+        supabase.from("finance_tx").update({categoria:nextName}).eq("workspace_id",wsId).eq("categoria",oldName);
+      } else {
+        supabase.from("finance_categories").update({emoji:novoEmoji}).eq("workspace_id",wsId).eq("name",oldName).eq("tipo",tipo);
+      }
+    }
     return { ok:true };
-  },[data,persist,showToast]);
+  },[data.customCategories,patchData,online,wsId,showToast]);
 
   const deleteCategory = useCallback((name, tipo)=>{
-    persist({...data, customCategories:data.customCategories.filter(c=>!(c.name===name && c.tipo===tipo))});
+    patchData(d=>({...d, customCategories:d.customCategories.filter(c=>!(c.name===name && c.tipo===tipo))}));
     showToast("Categoria removida ✓");
-  },[data,persist,showToast]);
+    if (online) supabase.from("finance_categories").delete().eq("workspace_id",wsId).eq("name",name).eq("tipo",tipo);
+  },[patchData,online,wsId,showToast]);
 
   const txMonth = useMemo(()=>data.transactions.filter(t=>{
     const d = new Date(t.data+"T12:00:00");
@@ -2902,7 +2963,7 @@ function TxForm({ tx, avatars, people=[], customCategories=[], onAddCategory, on
       <div style={{display:"flex",gap:8,marginTop:10}}>
         <div style={{flex:1}}>
           <Eyebrow style={{marginBottom:4}}>Categoria</Eyebrow>
-          <Select value={tx.categoria} onChange={e=>s("categoria",e.target.value)}>{cats.map(c=><option key={c}>{emojiFor(c,customCategories)} {c}</option>)}</Select>
+          <Select value={tx.categoria} onChange={e=>s("categoria",e.target.value)}>{cats.map(c=><option key={c} value={c}>{emojiFor(c,customCategories)} {c}</option>)}</Select>
         </div>
         <div style={{flex:1}}>
           <Eyebrow style={{marginBottom:4}}>Pagamento</Eyebrow>
