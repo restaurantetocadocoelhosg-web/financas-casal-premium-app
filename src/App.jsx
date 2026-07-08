@@ -2603,12 +2603,12 @@ function Metas({ goals, onAdd, onUpdate, onDelete }) {
           </div>
           <Input placeholder="Nome da meta (ex: Viagem)" value={form.nome} onChange={e=>setForm({...form,nome:e.target.value})} style={{marginBottom:10}}/>
           <div style={{display:"flex",gap:8,marginBottom:12}}>
-            <Input type="number" placeholder="Valor alvo (R$)" value={form.alvo} onChange={e=>setForm({...form,alvo:Number(e.target.value)})} style={{flex:1}}/>
+            <Input type="number" inputMode="decimal" placeholder="Valor alvo (R$)" value={form.alvo} onChange={e=>setForm({...form,alvo:e.target.value})} style={{flex:1}}/>
             <Input type="month" value={form.prazo?form.prazo.slice(0,7):""} onChange={e=>setForm({...form,prazo:e.target.value+"-01"})} style={{flex:1}}/>
           </div>
           <div style={{display:"flex",gap:8}}>
             <Btn variant="outline" onClick={()=>setForm(null)} style={{flex:1}}>Cancelar</Btn>
-            <Btn variant="gold" onClick={()=>{if(form.nome&&form.alvo){onAdd(form);setForm(null);}}} style={{flex:2}}><Check size={15}/> Criar meta</Btn>
+            <Btn variant="gold" onClick={()=>{if(form.nome&&Number(form.alvo)>0){onAdd({...form,alvo:Number(form.alvo)});setForm(null);}}} style={{flex:2}}><Check size={15}/> Criar meta</Btn>
           </div>
         </Card>
       )}
