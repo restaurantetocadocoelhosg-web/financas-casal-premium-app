@@ -1434,7 +1434,7 @@ function OnlineWorkspaceGate({ user, onCreateWorkspace, onAcceptInvite, onLogout
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,marginBottom:18}}>
           <div>
             <Eyebrow>Primeiro passo</Eyebrow>
-            <div style={{fontFamily:F.display,fontSize:24,fontWeight:600,lineHeight:1.05}}>Espaço do casal</div>
+            <div style={{fontFamily:F.display,fontSize:24,fontWeight:600,lineHeight:1.05}}>Sua área financeira</div>
             <div style={{fontSize:12.5,color:C.muted,marginTop:4,wordBreak:"break-word"}}>{user?.email}</div>
           </div>
           <button onClick={onLogout} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:9,cursor:"pointer",display:"flex"}}>
@@ -1442,9 +1442,14 @@ function OnlineWorkspaceGate({ user, onCreateWorkspace, onAcceptInvite, onLogout
           </button>
         </div>
 
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:16}}>
-          <button type="button" onClick={()=>setMode("create")} style={{border:`1.5px solid ${mode==="create"?C.ink:C.border}`,background:mode==="create"?C.ink:C.surface,color:mode==="create"?"#F6F1E7":C.inkSoft,borderRadius:13,padding:"10px 12px",fontWeight:800,cursor:"pointer",fontFamily:F.body}}>Criar</button>
-          <button type="button" onClick={()=>setMode("join")} style={{border:`1.5px solid ${mode==="join"?C.ink:C.border}`,background:mode==="join"?C.ink:C.surface,color:mode==="join"?"#F6F1E7":C.inkSoft,borderRadius:13,padding:"10px 12px",fontWeight:800,cursor:"pointer",fontFamily:F.body}}>Convite</button>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+          <button type="button" onClick={()=>setMode("create")} style={{border:`1.5px solid ${mode==="create"?C.ink:C.border}`,background:mode==="create"?C.ink:C.surface,color:mode==="create"?"#F6F1E7":C.inkSoft,borderRadius:13,padding:"10px 12px",fontWeight:800,cursor:"pointer",fontFamily:F.body}}>Começar do zero</button>
+          <button type="button" onClick={()=>setMode("join")} style={{border:`1.5px solid ${mode==="join"?C.ink:C.border}`,background:mode==="join"?C.ink:C.surface,color:mode==="join"?"#F6F1E7":C.inkSoft,borderRadius:13,padding:"10px 12px",fontWeight:800,cursor:"pointer",fontFamily:F.body}}>Tenho um código</button>
+        </div>
+        <div style={{fontSize:12,color:C.muted,lineHeight:1.5,marginBottom:16,background:"#FBF7EE",border:`1px solid ${C.border}`,borderRadius:12,padding:"9px 12px"}}>
+          {mode==="create"
+            ? "Cria uma área 100% sua, separada de qualquer outra pessoa. Depois, se quiser, você mesmo convida alguém pra dividir com você."
+            : "Alguém te passou um código? Você entra na área DESSA pessoa, vendo os mesmos lançamentos dela."}
         </div>
 
         <form onSubmit={submit}>
@@ -1535,10 +1540,11 @@ function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, l
       </Card>
 
       <Card style={{marginBottom:14}}>
-        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
           <UserPlus size={17} color={C.caramelDeep}/>
-          <div style={{fontFamily:F.display,fontSize:17,fontWeight:600}}>Criar convite</div>
+          <div style={{fontFamily:F.display,fontSize:17,fontWeight:600}}>Convidar para DIVIDIR esta área</div>
         </div>
+        <div style={{fontSize:12,color:C.muted,marginBottom:12,lineHeight:1.5}}>Quem usar este código entra AQUI, vendo os mesmos lançamentos, metas e relatórios que você.</div>
         <form onSubmit={createInvite}>
           <Eyebrow style={{marginBottom:5}}>Perfil</Eyebrow>
           <Select value={role} onChange={e=>setRole(e.target.value)} style={{marginBottom:12}}>
@@ -1567,6 +1573,8 @@ function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, l
         )}
       </Card>
 
+      <ShareAppCard/>
+
       <Card style={{marginBottom:14}}>
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
           <Users size={17} color={C.plum}/>
@@ -1585,6 +1593,33 @@ function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, l
         ))}
       </Card>
     </div>
+  );
+}
+
+function ShareAppCard() {
+  const [copied, setCopied] = useState(false);
+  const appUrl = typeof window !== "undefined" ? `${window.location.origin}${window.location.pathname}` : "";
+  const msg = `Estou usando o Prosperidade pra organizar minhas finanças — é de graça e bem simples. Se quiser ter a SUA área (separada da minha, só sua): ${appUrl}`;
+
+  const share = async () => {
+    try {
+      await navigator.clipboard.writeText(msg);
+      setCopied(true);
+      setTimeout(()=>setCopied(false),1800);
+    } catch {}
+  };
+
+  return (
+    <Card style={{marginBottom:14}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+        <Send size={17} color={C.plum}/>
+        <div style={{fontFamily:F.display,fontSize:17,fontWeight:600}}>Indicar o app pra alguém</div>
+      </div>
+      <div style={{fontSize:12,color:C.muted,marginBottom:12,lineHeight:1.5}}>Essa pessoa cria a PRÓPRIA área, 100% separada da sua — ela não vê nada do que está aqui, e você não vê nada dela.</div>
+      <Btn variant="outline" style={{width:"100%"}} onClick={share}>
+        <Copy size={14}/> {copied ? "Copiado!" : "Copiar mensagem de convite"}
+      </Btn>
+    </Card>
   );
 }
 
