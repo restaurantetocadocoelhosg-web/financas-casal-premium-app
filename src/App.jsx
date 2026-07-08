@@ -73,6 +73,21 @@ const CAT_GASTO = ["Mercado","Padaria","Açougue","Farmácia","Restaurante","Del
 const CAT_GANHO = ["Salário","Vendas","Freelance","Investimentos","Reembolso","Outros ganhos"];
 const EMOJI = {Mercado:"🛒",Padaria:"🥖",Açougue:"🥩",Farmácia:"💊",Restaurante:"🍽️",Delivery:"🛵",Combustível:"⛽",Casa:"🏠",Energia:"💡",Água:"💧",Internet:"🌐",Streaming:"📺",Assinaturas:"🔁",Carro:"🚗",Seguro:"🛡️",Lazer:"🎉",Roupas:"👕",Pets:"🐾",Presentes:"🎁",Saúde:"🏥",Viagem:"✈️",Impostos:"🧾",Outros:"📦",Salário:"💼",Vendas:"💰",Freelance:"🖥️",Investimentos:"📈",Reembolso:"↩️","Outros ganhos":"🪙"};
 const GOAL_EMOJIS = ["🏖️","🏠","🚗","💍","📱","🎓","💼","🌍","🎁","💰","🐕","✈️"];
+// Emojis por setor pra escolher visualmente (celular não digita emoji fácil).
+const EMOJI_CHOICES = [
+  "🛒","🥖","🥩","🍽️","🛵","🍕","🍔","🍺","☕","🍎","🥗","🍫",
+  "🏠","💡","💧","🌐","🔥","🛋️","🧹","🚿","🪑","🧺",
+  "🚗","⛽","🚌","🚕","🏍️","🚲","🛴","✈️","🚆","🅿️",
+  "💊","🏥","🩺","🦷","💉","🏋️","🧘","🧴","👓",
+  "🎓","📚","✏️","🏫","👨‍🎓","📖","🖊️","🎒","🔬",
+  "🙏","⛪","✝️","📿","🕊️","☪️","✡️",
+  "🎉","🎮","🎬","🎵","🎸","⚽","🏖️","🎨","📺","🎳",
+  "👕","👟","👗","👜","💄","💍","🕶️","🧥","🧢",
+  "🐾","🐶","🐱","🐟","🦴",
+  "👶","🍼","🧸","🎈",
+  "💼","💰","📈","🖥️","🏦","💳","🪙","💵","🧾","💸",
+  "🎁","🎂","💐","📦","🔁","🛡️","📱","🔧","⚙️","🧾","📅","❤️",
+];
 const CHART_COLORS = ["#0B5D56","#5B4BB2","#D6A83B","#2563A8","#17815F","#C2413A","#7C63D8","#0F766E","#9A6A10","#3B6D8A"];
 
 /* ── utilitários ── */
@@ -644,6 +659,30 @@ const Select = ({value,onChange,children,style}) => (
     {children}
   </select>
 );
+
+// Seletor visual de emoji: toca no botão, abre uma grade sobreposta pra escolher (sem teclado de emoji).
+const EmojiPicker = ({ value, onChange }) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{position:"relative",flexShrink:0}}>
+      <button type="button" onClick={()=>setOpen(o=>!o)} style={{width:52,height:44,borderRadius:12,border:`1.5px solid ${open?C.caramel:C.border}`,background:C.surface,fontSize:22,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",padding:0}}>
+        {value||"📦"}
+      </button>
+      {open&&(
+        <>
+          <div onClick={()=>setOpen(false)} style={{position:"fixed",inset:0,zIndex:19}}/>
+          <div style={{position:"absolute",top:"100%",left:0,marginTop:6,zIndex:20,width:"min(276px,78vw)",background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:8,maxHeight:200,overflowY:"auto",display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,boxShadow:C.shadow||"0 10px 30px rgba(0,0,0,0.15)"}}>
+            {EMOJI_CHOICES.map((e,i)=>(
+              <button key={e+i} type="button" onClick={()=>{onChange(e);setOpen(false);}} style={{aspectRatio:"1",borderRadius:9,border:value===e?`2px solid ${C.caramelDeep}`:`1px solid ${C.hairline}`,background:value===e?C.goldPale:"#FBF7EE",fontSize:18,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",padding:0}}>
+                {e}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
 
 const Btn = ({children, variant="dark", onClick, disabled, style, small}) => {
   const variants = {
@@ -1801,7 +1840,7 @@ function CategoriesManager({ customCategories=[], onAddCategory, onUpdateCategor
       </div>
 
       <div style={{display:"flex",gap:8,marginBottom:6}}>
-        <Input value={nova.emoji} onChange={e=>setNova(v=>({...v,emoji:e.target.value.slice(0,2)}))} placeholder="📦" style={{width:56,textAlign:"center",fontSize:18}}/>
+        <EmojiPicker value={nova.emoji} onChange={em=>setNova(v=>({...v,emoji:em}))}/>
         <Input value={nova.name} onChange={e=>{setNova(v=>({...v,name:e.target.value}));setErro("");}} placeholder={tipo==="gasto"?"Ex.: Curso":"Ex.: Aluguel recebido"} style={{flex:1}}/>
         <Btn variant="gold" small onClick={criar} disabled={!nova.name.trim()}><Plus size={14}/></Btn>
       </div>
@@ -1814,7 +1853,7 @@ function CategoriesManager({ customCategories=[], onAddCategory, onUpdateCategor
             <div key={c.name} style={{padding:"8px 0",borderTop:`1px solid ${C.hairline}`}}>
               {editando===c.name ? (
                 <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                  <Input value={editForm.emoji} onChange={e=>setEditForm(v=>({...v,emoji:e.target.value.slice(0,2)}))} style={{width:48,textAlign:"center",fontSize:16}}/>
+                  <EmojiPicker value={editForm.emoji} onChange={em=>setEditForm(v=>({...v,emoji:em}))}/>
                   <Input value={editForm.name} onChange={e=>setEditForm(v=>({...v,name:e.target.value}))} style={{flex:1}} autoFocus/>
                   <Btn variant="gold" small onClick={()=>salvarEdicao(c.name)}><Check size={13}/></Btn>
                   <button onClick={()=>{setEditando(null);setErro("");}} style={{background:"none",border:"none",cursor:"pointer",color:C.muted,fontSize:12,fontWeight:700}}>✕</button>
@@ -2808,7 +2847,7 @@ function TxForm({ tx, avatars, people=[], customCategories=[], onAddCategory, on
         <div style={{marginTop:8,background:"#FBF7EE",border:`1px solid ${C.border}`,borderRadius:12,padding:10}}>
           <div style={{fontSize:11.5,color:C.muted,marginBottom:6,fontWeight:700}}>Nova categoria de {tx.tipo==="ganho"?"ganho":"gasto"}</div>
           <div style={{display:"flex",gap:8}}>
-            <Input value={novaCat.emoji} onChange={e=>setNovaCat(v=>({...v,emoji:e.target.value.slice(0,2)}))} placeholder="📦" style={{width:56,textAlign:"center",fontSize:18}}/>
+            <EmojiPicker value={novaCat.emoji} onChange={em=>setNovaCat(v=>({...v,emoji:em}))}/>
             <Input value={novaCat.name} onChange={e=>setNovaCat(v=>({...v,name:e.target.value}))} placeholder="Ex.: Curso" style={{flex:1}} autoFocus/>
           </div>
           {catErr&&<div style={{fontSize:11.5,color:C.red,fontWeight:700,marginTop:6}}>{catErr}</div>}
