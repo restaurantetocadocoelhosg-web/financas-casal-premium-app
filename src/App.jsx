@@ -54,6 +54,8 @@ const F = {
 const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
+// Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
+const APP_VERSION = "2.0";
 // v-multi-tenant: nomes NAO sao mais fixos (cada workspace tem os seus, vindos de finance_members).
 // Cor por pessoa: hash estavel do nome -> mesma cor sempre, sem precisar saber a lista toda.
 const PESSOA_CASAL = "Casal";
@@ -751,13 +753,36 @@ function GlobalStyles() {
   );
 }
 
+// Símbolo único do Prosperidade: linha de crescimento saindo de uma moeda e virando broto.
+function BrandMark({ size=64 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 64 64" style={{display:"block"}} aria-label="Prosperidade">
+      <defs>
+        <linearGradient id="brandg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#8F5A2B"/>
+          <stop offset="1" stopColor="#D3A23C"/>
+        </linearGradient>
+      </defs>
+      <rect width="64" height="64" rx="16" fill="url(#brandg)"/>
+      <path d="M14 46 L26 33 L35 40 L48 24" fill="none" stroke="#FFF6E6" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round"/>
+      <circle cx="14" cy="46" r="4.2" fill="#FFF6E6"/>
+      <path d="M48 24 C 50 14, 58 12, 60 8 C 52 9, 45.5 15, 48 24 Z" fill="#7CC49B"/>
+    </svg>
+  );
+}
+
 function LoadingScreen({ label="Prosperidade", status }) {
   return (
-    <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:14,padding:20,textAlign:"center"}}>
+    <div style={{minHeight:"100vh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16,padding:20,textAlign:"center"}}>
       <GlobalStyles/>
-      <div style={{fontFamily:F.display,fontSize:24,fontWeight:600,color:C.caramelDeep,fontStyle:"italic"}}>{label}</div>
-      <Loader2 size={22} color={C.gold} style={{animation:"spin 1s linear infinite"}}/>
+      <div style={{boxShadow:"0 18px 40px rgba(143,90,43,0.28)",borderRadius:22,animation:"slideUp .4s ease"}}><BrandMark size={84}/></div>
+      <div>
+        <div style={{fontFamily:F.display,fontSize:30,fontWeight:600,color:C.caramelDeep,letterSpacing:0.5}}>{label}</div>
+        <div style={{fontSize:12,color:C.muted,marginTop:2,fontStyle:"italic"}}>Metas em dia = prosperidade certa</div>
+      </div>
+      <Loader2 size={20} color={C.gold} style={{animation:"spin 1s linear infinite"}}/>
       {status&&<div style={{fontSize:12.5,color:C.muted,maxWidth:320,lineHeight:1.45}}>{status}</div>}
+      <div style={{position:"fixed",bottom:18,fontSize:11,color:C.faint,fontWeight:700,letterSpacing:0.5}}>v{APP_VERSION}</div>
     </div>
   );
 }
@@ -1407,10 +1432,13 @@ export default function App() {
       <div style={{maxWidth:480,margin:"0 auto",padding:"22px 18px"}}>
         {/* ── HEADER ── */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}}>
-          <div>
-            <Eyebrow>{greeting()}</Eyebrow>
-            <div style={{fontFamily:F.display,fontSize:26,fontWeight:600,letterSpacing:0,lineHeight:1.1}}>
-              <em style={{color:C.caramelDeep}}>Prosperidade</em>
+          <div style={{display:"flex",alignItems:"center",gap:11}}>
+            <BrandMark size={40}/>
+            <div>
+              <Eyebrow>{greeting()}</Eyebrow>
+              <div style={{fontFamily:F.display,fontSize:26,fontWeight:600,letterSpacing:0,lineHeight:1.1}}>
+                <em style={{color:C.caramelDeep}}>Prosperidade</em>
+              </div>
             </div>
           </div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
@@ -1595,14 +1623,12 @@ function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, syncSta
       <GlobalStyles/>
       <Card style={{width:"100%",maxWidth:430,padding:24}}>
         <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:18}}>
-          <div style={{width:48,height:48,borderRadius:14,background:C.greenPale,display:"flex",alignItems:"center",justifyContent:"center"}}>
-            <Cloud size={22} color={C.caramelDeep}/>
-          </div>
-          <div>
-            <Eyebrow>Supabase seguro</Eyebrow>
+          <div style={{boxShadow:"0 8px 20px rgba(143,90,43,0.25)",borderRadius:14}}><BrandMark size={48}/></div>
+          <div style={{flex:1}}>
             <div style={{fontFamily:F.display,fontSize:24,fontWeight:600,lineHeight:1.05}}>Prosperidade</div>
             <div style={{fontSize:11.5,color:C.muted,fontWeight:600,letterSpacing:0.3,marginTop:2}}>Metas em dia = Prosperidade certa</div>
           </div>
+          <span style={{fontSize:10.5,color:C.faint,fontWeight:800,letterSpacing:0.5,alignSelf:"flex-start"}}>v{APP_VERSION}</span>
         </div>
 
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:16}}>
@@ -1775,9 +1801,12 @@ function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, l
   return (
     <div className="su">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-        <div>
-          <div style={{fontFamily:F.display,fontSize:22,fontWeight:600}}>Admin</div>
-          <div style={{fontSize:12,color:C.muted}}>Sessão: <b>{currentUser.name}</b></div>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <BrandMark size={40}/>
+          <div>
+            <div style={{fontFamily:F.display,fontSize:22,fontWeight:600,display:"flex",alignItems:"center",gap:8}}>Admin <span style={{fontSize:10.5,color:C.caramelDeep,background:C.goldPale,borderRadius:99,padding:"2px 8px",fontWeight:800,letterSpacing:0.5}}>v{APP_VERSION}</span></div>
+            <div style={{fontSize:12,color:C.muted}}>Sessão: <b>{currentUser.name}</b></div>
+          </div>
         </div>
         <Btn variant="outline" small onClick={onLogout}><LogOut size={14}/> Sair</Btn>
       </div>
@@ -2130,9 +2159,12 @@ function AdminPanel({ auth, currentUser, data, onCreateUser, onDeleteUser, onLog
   return (
     <div className="su">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-        <div>
-          <div style={{fontFamily:F.display,fontSize:22,fontWeight:600}}>Admin</div>
-          <div style={{fontSize:12,color:C.muted}}>Sessão: <b>{currentUser.name}</b></div>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <BrandMark size={40}/>
+          <div>
+            <div style={{fontFamily:F.display,fontSize:22,fontWeight:600,display:"flex",alignItems:"center",gap:8}}>Admin <span style={{fontSize:10.5,color:C.caramelDeep,background:C.goldPale,borderRadius:99,padding:"2px 8px",fontWeight:800,letterSpacing:0.5}}>v{APP_VERSION}</span></div>
+            <div style={{fontSize:12,color:C.muted}}>Sessão: <b>{currentUser.name}</b></div>
+          </div>
         </div>
         <Btn variant="outline" small onClick={onLogout}><LogOut size={14}/> Sair</Btn>
       </div>
