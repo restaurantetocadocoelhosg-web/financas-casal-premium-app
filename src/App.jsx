@@ -10,7 +10,7 @@ import {
   Target, Calendar, Search, Camera, ChevronDown, ReceiptText,
   RotateCcw, ImagePlus, UserRound, Eye, Download, FileSpreadsheet,
   FileText, Upload, BrainCircuit, ShieldCheck, BadgeDollarSign,
-  TrendingDown, Database, Printer, LockKeyhole, LogOut, UserPlus, Users,
+  TrendingDown, TrendingUp, Database, Printer, LockKeyhole, LogOut, UserPlus, Users,
   Cloud, Copy, KeyRound
 } from "lucide-react";
 
@@ -2542,8 +2542,9 @@ function TxRow({ t, avatars, onDelete, onEdit, onViewPhoto }) {
 ═══════════════════════════════════════════════ */
 function Metas({ goals, onAdd, onUpdate, onDelete }) {
   const [form, setForm] = useState(null);
-  const [deposit, setDeposit] = useState({id:null,val:""});
+  const [openId, setOpenId] = useState(null);
   const totalSaved = goals.reduce((s,g)=>s+Number(g.saved||0),0);
+  const openGoal = goals.find(g=>g.id===openId) || null;
   return (
     <div className="su">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
@@ -2563,8 +2564,9 @@ function Metas({ goals, onAdd, onUpdate, onDelete }) {
       )}
       {goals.map(g=>{
         const pct = g.alvo>0?Math.min((g.saved||0)/g.alvo*100,100):0;
+        const qtdDep = (g.deposits||[]).length;
         return (
-          <Card key={g.id} style={{marginBottom:12}}>
+          <Card key={g.id} onClick={()=>setOpenId(g.id)} style={{marginBottom:12,cursor:"pointer"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
               <div style={{display:"flex",gap:12,alignItems:"center"}}>
                 <div style={{width:48,height:48,borderRadius:14,background:C.goldPale,display:"flex",alignItems:"center",justifyContent:"center",fontSize:26}}>{g.emoji}</div>
@@ -2573,7 +2575,7 @@ function Metas({ goals, onAdd, onUpdate, onDelete }) {
                   {g.prazo&&<div style={{fontSize:11.5,color:C.muted}}>até {new Date(g.prazo+"T12:00:00").toLocaleDateString("pt-BR",{month:"short",year:"numeric"})}</div>}
                 </div>
               </div>
-              <button onClick={()=>{if(window.confirm("Excluir esta meta?"))onDelete(g.id)}} style={{background:C.redPale,border:"none",borderRadius:9,padding:6,cursor:"pointer",display:"flex"}}><Trash2 size={13} color={C.red}/></button>
+              <button onClick={(e)=>{e.stopPropagation();if(window.confirm("Excluir esta meta?"))onDelete(g.id)}} style={{background:C.redPale,border:"none",borderRadius:9,padding:6,cursor:"pointer",display:"flex"}}><Trash2 size={13} color={C.red}/></button>
             </div>
             <div style={{margin:"14px 0 10px"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:5}}>
@@ -2584,15 +2586,10 @@ function Metas({ goals, onAdd, onUpdate, onDelete }) {
                 <div style={{width:`${pct}%`,height:"100%",background:`linear-gradient(90deg,${C.caramelDeep},${C.gold})`,borderRadius:99,transition:"width .6s ease"}}/>
               </div>
             </div>
-            {deposit.id===g.id?(
-              <div style={{display:"flex",gap:8}}>
-                <Input type="number" placeholder="Valor a guardar" value={deposit.val} onChange={e=>setDeposit({...deposit,val:e.target.value})} style={{flex:1}}/>
-                <Btn variant="gold" small onClick={()=>{onUpdate({...g,saved:Number(g.saved||0)+Number(deposit.val||0)});setDeposit({id:null,val:""});}}><Check size={14}/></Btn>
-                <Btn variant="outline" small onClick={()=>setDeposit({id:null,val:""})}><X size={14}/></Btn>
-              </div>
-            ):(
-              <Btn variant="ghost" small onClick={()=>setDeposit({id:g.id,val:""})} style={{width:"100%"}}><Plus size={13} color={C.caramelDeep}/> Guardar valor</Btn>
-            )}
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:12,color:C.caramelDeep,fontWeight:700}}>
+              <span>{qtdDep>0 ? `${qtdDep} depósito${qtdDep>1?"s":""} · ver extrato` : "Tocar para guardar valor"}</span>
+              <ChevronRight size={16} color={C.muted}/>
+            </div>
           </Card>
         );
       })}
@@ -2615,7 +2612,81 @@ function Metas({ goals, onAdd, onUpdate, onDelete }) {
           </div>
         </Card>
       )}
+      {openGoal&&<GoalSheet goal={openGoal} onClose={()=>setOpenId(null)} onUpdate={onUpdate}/>}
     </div>
+  );
+}
+
+function GoalSheet({ goal, onClose, onUpdate }) {
+  const deposits = goal.deposits || [];
+  const somaDep = deposits.reduce((s,d)=>s+Number(d.valor||0),0);
+  const saved = Number(goal.saved||0);
+  const saldoAnterior = Math.max(0, saved - somaDep); // metas antigas que já tinham valor guardado sem histórico
+  const pct = goal.alvo>0?Math.min(saved/goal.alvo*100,100):0;
+  const restante = Math.max(0, Number(goal.alvo||0) - saved);
+  const [form, setForm] = useState({ valor:"", data:todayISO(), motivo:"" });
+
+  const guardar = () => {
+    const v = Number(form.valor||0);
+    if (v<=0) return;
+    const novo = { id:uid(), valor:v, data:form.data||todayISO(), motivo:(form.motivo||"").trim() };
+    onUpdate({ ...goal, saved:saved+v, deposits:[...deposits, novo] });
+    setForm({ valor:"", data:todayISO(), motivo:"" });
+  };
+  const remover = (id) => {
+    const d = deposits.find(x=>x.id===id);
+    if (!d) return;
+    onUpdate({ ...goal, saved:Math.max(0, saved-Number(d.valor||0)), deposits:deposits.filter(x=>x.id!==id) });
+  };
+  const ordenados = [...deposits].sort((a,b)=>(b.data||"").localeCompare(a.data||"") || (b.id>a.id?1:-1));
+
+  return (
+    <Sheet onClose={onClose} title={`${goal.emoji} ${goal.nome}`}>
+      <div style={{background:C.goldPale,borderRadius:16,padding:16,marginBottom:16}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:6}}>
+          <span style={{fontFamily:F.display,fontSize:24,fontWeight:600,color:C.caramelDeep}}>{fmt(saved)}</span>
+          <span style={{fontSize:12.5,color:C.inkSoft}}>de {fmt(goal.alvo)} · <b>{pct.toFixed(0)}%</b></span>
+        </div>
+        <div style={{background:"rgba(84,60,32,0.12)",borderRadius:99,height:10,overflow:"hidden"}}>
+          <div style={{width:`${pct}%`,height:"100%",background:`linear-gradient(90deg,${C.caramelDeep},${C.gold})`,borderRadius:99}}/>
+        </div>
+        <div style={{fontSize:11.5,color:C.inkSoft,marginTop:7}}>
+          {restante>0 ? <>Faltam <b>{fmt(restante)}</b> pra alcançar.</> : <b>Meta alcançada! 🎉</b>}
+        </div>
+      </div>
+
+      <Eyebrow style={{marginBottom:8}}>Guardar um valor</Eyebrow>
+      <div style={{display:"flex",gap:8,marginBottom:8}}>
+        <Input type="number" inputMode="decimal" placeholder="Valor (R$)" value={form.valor} onChange={e=>setForm(f=>({...f,valor:e.target.value}))} style={{flex:1.2,fontFamily:F.display,fontWeight:600}}/>
+        <Input type="date" value={form.data} onChange={e=>setForm(f=>({...f,data:e.target.value}))} style={{flex:1}}/>
+      </div>
+      <Input placeholder="Motivo (opcional) — ex: extra do serviço X" value={form.motivo} onChange={e=>setForm(f=>({...f,motivo:e.target.value}))} style={{marginBottom:10}}/>
+      <Btn variant="gold" onClick={guardar} disabled={!(Number(form.valor)>0)} style={{width:"100%",marginBottom:18}}><Plus size={15}/> Guardar na meta</Btn>
+
+      <Eyebrow style={{marginBottom:8}}>Extrato de depósitos</Eyebrow>
+      {ordenados.length===0 && saldoAnterior<=0 && (
+        <div style={{fontSize:12.5,color:C.muted,textAlign:"center",padding:"14px 0"}}>Nenhum depósito ainda. Guarde o primeiro valor acima. 💪</div>
+      )}
+      {ordenados.map(d=>(
+        <div key={d.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderTop:`1px solid ${C.hairline}`}}>
+          <div style={{width:36,height:36,borderRadius:11,background:C.greenPale,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><TrendingUp size={16} color={C.green}/></div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontWeight:700,fontSize:14,color:C.green}}>+ {fmt(d.valor)}</div>
+            <div style={{fontSize:11.5,color:C.muted}}>{new Date((d.data||todayISO())+"T12:00:00").toLocaleDateString("pt-BR")}{d.motivo?` · ${d.motivo}`:""}</div>
+          </div>
+          <button onClick={()=>remover(d.id)} style={{background:C.redPale,border:"none",borderRadius:9,padding:7,cursor:"pointer",display:"flex",flexShrink:0}}><Trash2 size={13} color={C.red}/></button>
+        </div>
+      ))}
+      {saldoAnterior>0 && (
+        <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderTop:`1px solid ${C.hairline}`}}>
+          <div style={{width:36,height:36,borderRadius:11,background:C.bgAlt,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><Wallet size={16} color={C.inkSoft}/></div>
+          <div style={{flex:1}}>
+            <div style={{fontWeight:700,fontSize:14}}>{fmt(saldoAnterior)}</div>
+            <div style={{fontSize:11.5,color:C.muted}}>Valor guardado antes do extrato</div>
+          </div>
+        </div>
+      )}
+    </Sheet>
   );
 }
 
