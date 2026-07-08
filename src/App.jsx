@@ -1004,9 +1004,31 @@ export default function App() {
     }
     if (!created.session) {
       setOnlineLoading(false);
-      return { ok:true, message:"Conta criada. Se o Supabase pedir confirmação, abra o email e depois entre com a senha." };
+      return { ok:true, needsConfirmation:true, email:cleanEmail, message:`Enviamos um código de 6 dígitos para ${cleanEmail}. Digite abaixo para confirmar.` };
     }
     return { ok:true };
+  },[]);
+
+  const onlineVerifyCode = useCallback(async ({ email, token }) => {
+    if (!supabase) return { ok:false, message:"Supabase não configurado." };
+    const cleanEmail = String(email||"").trim().toLowerCase();
+    const cleanToken = String(token||"").trim();
+    if (!cleanToken) return { ok:false, message:"Digite o código recebido por email." };
+    setOnlineLoading(true);
+    const { error } = await supabase.auth.verifyOtp({ email:cleanEmail, token:cleanToken, type:"signup" });
+    if (error) {
+      setOnlineLoading(false);
+      return { ok:false, message: error.message.includes("expired") ? "Código expirado. Peça um novo código." : error.message.includes("invalid") ? "Código incorreto. Confira e tente de novo." : error.message };
+    }
+    return { ok:true };
+  },[]);
+
+  const onlineResendCode = useCallback(async (email) => {
+    if (!supabase) return { ok:false, message:"Supabase não configurado." };
+    const cleanEmail = String(email||"").trim().toLowerCase();
+    const { error } = await supabase.auth.resend({ type:"signup", email:cleanEmail });
+    if (error) return { ok:false, message:error.message };
+    return { ok:true, message:`Novo código enviado para ${cleanEmail}.` };
   },[]);
 
   const createOnlineWorkspace = useCallback(async (displayName) => {
@@ -1122,7 +1144,7 @@ export default function App() {
   }
 
   if (SUPABASE_ENABLED && !onlineUser) return (
-    <OnlineAuthGate onLogin={onlineSignIn} onCreate={onlineSignUp} syncStatus={syncStatus}/>
+    <OnlineAuthGate onLogin={onlineSignIn} onCreate={onlineSignUp} onVerifyCode={onlineVerifyCode} onResendCode={onlineResendCode} syncStatus={syncStatus}/>
   );
 
   if (SUPABASE_ENABLED && onlineUser && onlineNeedsSetup) return (
@@ -1239,12 +1261,14 @@ export default function App() {
 /* ═══════════════════════════════════════════════
    ACESSO E ADMIN
 ═══════════════════════════════════════════════ */
-function OnlineAuthGate({ onLogin, onCreate, syncStatus }) {
+function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, syncStatus }) {
   const [mode, setMode] = useState("login");
   const [form, setForm] = useState({ name:"Rubens", email:"", password:"", confirm:"" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [pendingEmail, setPendingEmail] = useState("");
+  const [code, setCode] = useState("");
   const s = (k,v) => { setForm(f=>({...f,[k]:v})); setError(""); setMessage(""); };
 
   const submit = async (e) => {
@@ -1258,8 +1282,69 @@ function OnlineAuthGate({ onLogin, onCreate, syncStatus }) {
       setError(result.message);
       return;
     }
+    if (result.needsConfirmation) {
+      setPendingEmail(result.email);
+      setMode("confirm");
+    }
     if (result.message) setMessage(result.message);
   };
+
+  const submitCode = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    setMessage("");
+    const result = await onVerifyCode({ email:pendingEmail, token:code });
+    setBusy(false);
+    if (!result.ok) { setError(result.message); return; }
+    // sucesso: onAuthStateChange do supabase detecta a sessao nova e leva o usuario adiante sozinho
+  };
+
+  const resend = async () => {
+    setBusy(true);
+    setError("");
+    setMessage("");
+    const result = await onResendCode(pendingEmail);
+    setBusy(false);
+    if (!result.ok) { setError(result.message); return; }
+    setMessage(result.message);
+  };
+
+  if (mode === "confirm") {
+    return (
+      <div style={{minHeight:"100vh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+        <GlobalStyles/>
+        <Card style={{width:"100%",maxWidth:430,padding:24}}>
+          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:18}}>
+            <div style={{width:48,height:48,borderRadius:14,background:C.greenPale,display:"flex",alignItems:"center",justifyContent:"center"}}>
+              <KeyRound size={22} color={C.caramelDeep}/>
+            </div>
+            <div>
+              <Eyebrow>Confirme seu email</Eyebrow>
+              <div style={{fontFamily:F.display,fontSize:20,fontWeight:600,lineHeight:1.15}}>Código enviado para<br/>{pendingEmail}</div>
+            </div>
+          </div>
+          <form onSubmit={submitCode}>
+            <Eyebrow style={{marginBottom:5}}>Código de 6 dígitos</Eyebrow>
+            <Input autoFocus inputMode="numeric" maxLength={6} value={code} onChange={e=>{setCode(e.target.value.replace(/\D/g,""));setError("");setMessage("");}} placeholder="000000" style={{marginBottom:14,fontSize:22,letterSpacing:6,textAlign:"center",fontFamily:F.display}}/>
+            {error&&(
+              <div style={{background:C.redPale,border:`1px solid rgba(194,65,58,0.18)`,borderRadius:12,padding:"10px 12px",fontSize:12.5,color:C.red,marginBottom:12,fontWeight:700}}>{error}</div>
+            )}
+            {message&&(
+              <div style={{background:C.greenPale,border:`1px solid rgba(23,129,95,0.16)`,borderRadius:12,padding:"10px 12px",fontSize:12.5,color:C.green,marginBottom:12,fontWeight:700}}>{message}</div>
+            )}
+            <Btn variant="gold" disabled={busy||code.length<6} style={{width:"100%",marginBottom:10}}>
+              {busy ? <Loader2 size={15} style={{animation:"spin 1s linear infinite"}}/> : <KeyRound size={15}/>}
+              Confirmar código
+            </Btn>
+          </form>
+          <button type="button" onClick={resend} disabled={busy} style={{background:"none",border:"none",color:C.caramelDeep,fontWeight:700,fontSize:12.5,cursor:"pointer",width:"100%",padding:6,fontFamily:F.body}}>
+            Não recebeu? Reenviar código
+          </button>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div style={{minHeight:"100vh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
