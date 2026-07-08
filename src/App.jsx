@@ -2612,14 +2612,15 @@ function SearchModal({ transactions, avatars, onClose, onEdit, onDelete, onViewP
    PERFIS — FOTOS DO CASAL
 ═══════════════════════════════════════════════ */
 function ProfileSheet({ avatars, onSetAvatar, onClose }) {
-  const refs = { [PEOPLE[0]]: useRef(null), [PEOPLE[1]]: useRef(null) };
+  const pessoas = [...PEOPLE, PESSOA_CASAL];
+  const refs = Object.fromEntries(pessoas.map(p=>[p,useRef(null)]));
   return (
     <Sheet onClose={onClose} title="Fotos do casal">
       <div style={{fontSize:13,color:C.muted,marginBottom:16,lineHeight:1.6}}>
         As fotos identificam quem fez cada lançamento em todo o aplicativo — no extrato, nos gráficos e nos gastos por pessoa.
       </div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-        {PEOPLE.map(p=>(
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+        {pessoas.map(p=>(
           <div key={p} style={{textAlign:"center"}}>
             <input ref={refs[p]} type="file" accept="image/*" onChange={e=>{const f=e.target.files?.[0];if(f)onSetAvatar(p,f);}} style={{display:"none"}}/>
             <button onClick={()=>refs[p].current?.click()} style={{background:"none",border:"none",cursor:"pointer",padding:0}}>
