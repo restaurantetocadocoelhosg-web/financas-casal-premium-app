@@ -9,6 +9,7 @@ Aplicativo React para Rubens e Nayara acompanharem gastos, ganhos, metas e relat
 - Agente financeiro local para resumo do mês, economia, metas e contas fixas.
 - Relatórios com exportação em CSV, planilha Excel compatível (`.xls`), PDF e impressão.
 - Backup/importação em JSON para trocar dados entre aparelhos.
+- Primeiro acesso com criação de admin, login por usuário/senha e aba Admin para criar novos acessos.
 
 ## Rodar localmente
 
@@ -29,4 +30,4 @@ O projeto já inclui `.github/workflows/pages.yml`. Depois de enviar para um rep
 
 ## Observação sobre dados
 
-Os dados ficam no navegador de cada aparelho via `localStorage`. Use o backup JSON para transferir ou guardar uma cópia. Para uso compartilhado em tempo real, o próximo passo recomendado é adicionar login e banco de dados, por exemplo Supabase.
+Os dados e acessos ficam no navegador de cada aparelho via `localStorage`. Use o backup JSON para transferir ou guardar uma cópia. No GitHub Pages, a senha protege o uso local do app, mas não substitui autenticação com servidor. Para uso compartilhado em tempo real e login centralizado, o próximo passo recomendado é adicionar banco de dados e autenticação, por exemplo Supabase.

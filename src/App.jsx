@@ -9,7 +9,7 @@ import {
   Target, Calendar, Search, Camera, ChevronDown, ReceiptText,
   RotateCcw, ImagePlus, UserRound, Eye, Download, FileSpreadsheet,
   FileText, Upload, BrainCircuit, ShieldCheck, BadgeDollarSign,
-  TrendingDown, Database, Printer
+  TrendingDown, Database, Printer, LockKeyhole, LogOut, UserPlus, Users
 } from "lucide-react";
 
 /* ═══════════════════════════════════════════════
@@ -50,6 +50,8 @@ const F = {
 };
 
 const STORAGE_KEY = "financas-casal-v3";
+const AUTH_KEY = "financas-casal-auth-v1";
+const SESSION_KEY = "financas-casal-session-v1";
 const PEOPLE = ["Rubens", "Nayara"];
 const PERSON_COLOR = { Rubens: C.caramelDeep, Nayara: C.plum };
 const PAYMENTS = ["Pix", "Dinheiro", "Crédito", "Débito", "Boleto", "Transferência", "Outro"];
@@ -326,6 +328,76 @@ const browserStorage = {
   },
 };
 
+const DEFAULT_AUTH = { users:[], createdAt:null };
+const cleanLogin = (value="") => normalize(value).replace(/\s+/g,"").slice(0,32);
+const publicUser = (user) => user ? ({
+  id: user.id,
+  name: user.name,
+  login: user.login,
+  role: user.role,
+  createdAt: user.createdAt,
+  lastLoginAt: user.lastLoginAt,
+}) : null;
+
+const salt = () => {
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    return Array.from(bytes, b=>b.toString(16).padStart(2,"0")).join("");
+  }
+  return `${uid()}${Date.now()}`;
+};
+
+async function digestPassword(password, userSalt) {
+  const payload = `${userSalt}:${password}`;
+  if (typeof crypto !== "undefined" && crypto.subtle) {
+    const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload));
+    return Array.from(new Uint8Array(bytes), b=>b.toString(16).padStart(2,"0")).join("");
+  }
+  return btoa(unescape(encodeURIComponent(payload)));
+}
+
+async function makeAuthUser({ name, login, password, role="user" }) {
+  const userSalt = salt();
+  return {
+    id: uid(),
+    name: String(name||"").trim().slice(0,42),
+    login: cleanLogin(login),
+    role: role === "admin" ? "admin" : "user",
+    salt: userSalt,
+    passwordHash: await digestPassword(password, userSalt),
+    createdAt: new Date().toISOString(),
+    lastLoginAt: null,
+  };
+}
+
+async function loadAuth() {
+  try {
+    const r = await browserStorage.get(AUTH_KEY);
+    if (r?.value) {
+      const parsed = JSON.parse(r.value);
+      return {
+        ...DEFAULT_AUTH,
+        ...parsed,
+        users: Array.isArray(parsed?.users) ? parsed.users : [],
+      };
+    }
+  } catch {}
+  return DEFAULT_AUTH;
+}
+
+async function loadSession() {
+  try {
+    const r = await browserStorage.get(SESSION_KEY);
+    return r?.value ? JSON.parse(r.value) : null;
+  } catch {
+    return null;
+  }
+}
+
+const persistAuth = (auth) => browserStorage.set(AUTH_KEY, JSON.stringify(auth)).catch(()=>{});
+const persistSession = (session) => browserStorage.set(SESSION_KEY, JSON.stringify(session)).catch(()=>{});
+const clearSession = () => browserStorage.delete(SESSION_KEY).catch(()=>{});
+
 async function loadAll() {
   try {
     const r = await browserStorage.get(STORAGE_KEY);
@@ -559,11 +631,31 @@ const NavBtn = ({icon:Icon,label,active,onClick}) => (
   </button>
 );
 
+function GlobalStyles() {
+  return (
+    <style>{`
+      @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+      *{-webkit-tap-highlight-color:transparent;box-sizing:border-box}
+      ::-webkit-scrollbar{width:0}
+      input::placeholder,textarea::placeholder{color:${C.faint}}
+      select option{background:${C.surface};color:${C.ink}}
+      @keyframes spin{to{transform:rotate(360deg)}}
+      @keyframes slideUp{from{transform:translateY(36px);opacity:0}to{transform:translateY(0);opacity:1}}
+      @keyframes toastIn{from{transform:translate(-50%,16px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
+      .su{animation:slideUp .3s cubic-bezier(.4,0,.2,1)}
+      @media(max-width:360px){.bottom-nav-shell{gap:0;padding:5px}.bottom-nav-shell button{min-width:44px;padding-left:8px!important;padding-right:8px!important}}
+      @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+    `}</style>
+  );
+}
+
 /* ═══════════════════════════════════════════════
    APP
 ═══════════════════════════════════════════════ */
 export default function App() {
   const [data, setData] = useState(DEFAULT_DATA);
+  const [auth, setAuth] = useState(DEFAULT_AUTH);
+  const [session, setSession] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState("home");
   const [person, setPerson] = useState("Todos");
@@ -577,10 +669,100 @@ export default function App() {
   const [photoView, setPhotoView] = useState(null);
   const [toast, setToast] = useState(null);
 
-  useEffect(()=>{ loadAll().then(d=>{setData(d);setLoaded(true);}); },[]);
-
   const showToast = useCallback((msg)=>{ setToast(msg); setTimeout(()=>setToast(null),2600); },[]);
   const persist = useCallback((next)=>{ setData(next); persistAll(next); },[]);
+  const persistAuthState = useCallback((next)=>{ setAuth(next); persistAuth(next); },[]);
+
+  useEffect(()=>{
+    let alive = true;
+    Promise.all([loadAll(), loadAuth(), loadSession()]).then(([d, a, s])=>{
+      if (!alive) return;
+      setData(d);
+      setAuth(a);
+      const validSession = s && a.users.some(u=>u.id===s.userId);
+      setSession(validSession ? s : null);
+      if (s && !validSession) clearSession();
+      setLoaded(true);
+    });
+    return ()=>{ alive = false; };
+  },[]);
+
+  const currentUser = useMemo(
+    ()=>auth.users.find(u=>u.id===session?.userId) || null,
+    [auth.users, session]
+  );
+
+  useEffect(()=>{
+    if (tab==="admin" && currentUser?.role !== "admin") setTab("home");
+  },[tab,currentUser]);
+
+  const createFirstUser = useCallback(async (form) => {
+    const login = cleanLogin(form.login);
+    if (!form.name.trim() || !login || String(form.password||"").length < 4) {
+      return { ok:false, message:"Preencha nome, usuário e senha com pelo menos 4 caracteres." };
+    }
+    if (form.password !== form.confirm) return { ok:false, message:"As senhas não conferem." };
+    const user = await makeAuthUser({ ...form, login, role:"admin" });
+    const nextAuth = { createdAt:new Date().toISOString(), users:[user] };
+    const nextSession = { userId:user.id, issuedAt:new Date().toISOString() };
+    persistAuthState(nextAuth);
+    setSession(nextSession);
+    persistSession(nextSession);
+    showToast("Admin criado ✓");
+    return { ok:true };
+  },[persistAuthState,showToast]);
+
+  const signIn = useCallback(async ({ login, password }) => {
+    const key = cleanLogin(login);
+    const user = auth.users.find(u=>u.login===key);
+    if (!user) return { ok:false, message:"Usuário não encontrado." };
+    const hash = await digestPassword(password, user.salt);
+    if (hash !== user.passwordHash) return { ok:false, message:"Senha incorreta." };
+    const now = new Date().toISOString();
+    const nextAuth = { ...auth, users:auth.users.map(u=>u.id===user.id ? { ...u, lastLoginAt:now } : u) };
+    const nextSession = { userId:user.id, issuedAt:now };
+    persistAuthState(nextAuth);
+    setSession(nextSession);
+    persistSession(nextSession);
+    setTab("home");
+    return { ok:true };
+  },[auth,persistAuthState]);
+
+  const logout = useCallback(()=>{
+    clearSession();
+    setSession(null);
+    setTab("home");
+  },[]);
+
+  const createUser = useCallback(async (form) => {
+    if (currentUser?.role !== "admin") return { ok:false, message:"Apenas admin pode criar acesso." };
+    const login = cleanLogin(form.login);
+    if (!form.name.trim() || !login || String(form.password||"").length < 4) {
+      return { ok:false, message:"Preencha nome, usuário e senha com pelo menos 4 caracteres." };
+    }
+    if (auth.users.some(u=>u.login===login)) return { ok:false, message:"Esse usuário já existe." };
+    const user = await makeAuthUser({ ...form, login });
+    persistAuthState({ ...auth, users:[...auth.users,user] });
+    showToast("Acesso criado ✓");
+    return { ok:true };
+  },[auth,currentUser,persistAuthState,showToast]);
+
+  const deleteUser = useCallback((id) => {
+    if (currentUser?.role !== "admin") return;
+    if (id === currentUser.id) {
+      showToast("Você não pode remover seu próprio acesso");
+      return;
+    }
+    const target = auth.users.find(u=>u.id===id);
+    if (!target) return;
+    const adminCount = auth.users.filter(u=>u.role==="admin").length;
+    if (target.role==="admin" && adminCount <= 1) {
+      showToast("Mantenha pelo menos um admin");
+      return;
+    }
+    persistAuthState({ ...auth, users:auth.users.filter(u=>u.id!==id) });
+    showToast("Acesso removido");
+  },[auth,currentUser,persistAuthState,showToast]);
 
   const addTx = useCallback(async (tx, foto) => {
     const id = uid();
@@ -633,27 +815,21 @@ export default function App() {
 
   if(!loaded) return (
     <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:14}}>
+      <GlobalStyles/>
       <div style={{fontFamily:F.display,fontSize:24,fontWeight:600,color:C.caramelDeep,fontStyle:"italic"}}>Finanças do Casal</div>
       <Loader2 size={22} color={C.gold} style={{animation:"spin 1s linear infinite"}}/>
     </div>
+  );
+
+  if (!currentUser) return (
+    <AuthGate auth={auth} onCreateFirst={createFirstUser} onLogin={signIn}/>
   );
 
   const newManualTx = ()=>setEditing({tipo:"gasto",valor:"",categoria:"Mercado",descricao:"",pagamento:"Pix",pessoa:person==="Todos"?PEOPLE[0]:person,data:todayISO(),necessario:true});
 
   return (
     <div style={{minHeight:"100vh",background:C.bg,color:C.ink,fontFamily:F.body,paddingBottom:104}}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
-        *{-webkit-tap-highlight-color:transparent;box-sizing:border-box}
-        ::-webkit-scrollbar{width:0}
-        input::placeholder,textarea::placeholder{color:${C.faint}}
-        select option{background:${C.surface};color:${C.ink}}
-        @keyframes spin{to{transform:rotate(360deg)}}
-        @keyframes slideUp{from{transform:translateY(36px);opacity:0}to{transform:translateY(0);opacity:1}}
-        @keyframes toastIn{from{transform:translate(-50%,16px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
-        .su{animation:slideUp .3s cubic-bezier(.4,0,.2,1)}
-        @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
-      `}</style>
+      <GlobalStyles/>
 
       <div style={{maxWidth:480,margin:"0 auto",padding:"22px 18px"}}>
         {/* ── HEADER ── */}
@@ -673,6 +849,9 @@ export default function App() {
                 <Avatar name={PEOPLE[0]} avatars={data.avatars} size={36}/>
                 <div style={{marginLeft:-12}}><Avatar name={PEOPLE[1]} avatars={data.avatars} size={36}/></div>
               </div>
+            </button>
+            <button onClick={logout} title={`Sair de ${currentUser.name}`} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:10,cursor:"pointer",display:"flex",boxShadow:C.shadowSm}}>
+              <LogOut size={17} color={C.inkSoft}/>
             </button>
           </div>
         </div>
@@ -698,11 +877,12 @@ export default function App() {
         {tab==="extrato" && <Extrato tx={txMonth} avatars={data.avatars} onDelete={deleteTx} onEdit={setEditing} onViewPhoto={setPhotoView}/>}
         {tab==="metas"   && <Metas goals={data.goals} onAdd={addGoal} onUpdate={updateGoal} onDelete={deleteGoal}/>}
         {tab==="chat"    && <ChatIA transactions={data.transactions} fixedExpenses={data.fixedExpenses} goals={data.goals} avatars={data.avatars}/>}
+        {tab==="admin"   && currentUser.role==="admin" && <AdminPanel auth={auth} currentUser={publicUser(currentUser)} data={data} onCreateUser={createUser} onDeleteUser={deleteUser} onLogout={logout}/>}
       </div>
 
       {/* ── BOTTOM NAV ── */}
       <div style={{position:"fixed",bottom:0,left:0,right:0,display:"flex",justifyContent:"center",padding:"0 16px 18px",zIndex:40,pointerEvents:"none"}}>
-        <div style={{pointerEvents:"auto",display:"flex",alignItems:"center",gap:2,background:"rgba(255,253,248,0.92)",backdropFilter:"blur(18px)",border:`1px solid ${C.border}`,borderRadius:999,padding:6,boxShadow:"0 10px 40px rgba(90,65,35,0.18)"}}>
+        <div className="bottom-nav-shell" style={{pointerEvents:"auto",display:"flex",alignItems:"center",gap:2,background:"rgba(255,253,248,0.92)",backdropFilter:"blur(18px)",border:`1px solid ${C.border}`,borderRadius:999,padding:6,boxShadow:"0 10px 40px rgba(90,65,35,0.18)"}}>
           <NavBtn icon={Home} label="Início" active={tab==="home"} onClick={()=>setTab("home")}/>
           <NavBtn icon={List} label="Extrato" active={tab==="extrato"} onClick={()=>setTab("extrato")}/>
           <button onClick={()=>setAiOpen(true)} style={{width:56,height:56,borderRadius:999,border:"none",background:`linear-gradient(140deg,${C.ink} 20%,${C.caramelDeep} 80%)`,color:C.gold,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",margin:"0 3px",boxShadow:"0 6px 20px rgba(90,60,30,0.35)",flexShrink:0}}>
@@ -710,6 +890,7 @@ export default function App() {
           </button>
           <NavBtn icon={Target} label="Metas" active={tab==="metas"} onClick={()=>setTab("metas")}/>
           <NavBtn icon={MessageCircle} label="Agente" active={tab==="chat"} onClick={()=>setTab("chat")}/>
+          {currentUser.role==="admin"&&<NavBtn icon={ShieldCheck} label="Admin" active={tab==="admin"} onClick={()=>setTab("admin")}/>}
         </div>
       </div>
 
@@ -727,6 +908,187 @@ export default function App() {
           {toast}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════
+   ACESSO E ADMIN
+═══════════════════════════════════════════════ */
+function AuthGate({ auth, onCreateFirst, onLogin }) {
+  const isSetup = auth.users.length === 0;
+  const [form, setForm] = useState(isSetup
+    ? { name:"Rubens", login:"rubens", password:"", confirm:"" }
+    : { login:"", password:"" }
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const s = (k,v) => { setForm(f=>({...f,[k]:v})); setError(""); };
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    const result = isSetup ? await onCreateFirst(form) : await onLogin(form);
+    setBusy(false);
+    if (!result.ok) setError(result.message);
+  };
+
+  return (
+    <div style={{minHeight:"100vh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+      <GlobalStyles/>
+      <Card style={{width:"100%",maxWidth:430,padding:24}}>
+        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:18}}>
+          <div style={{width:48,height:48,borderRadius:14,background:C.greenPale,display:"flex",alignItems:"center",justifyContent:"center"}}>
+            <LockKeyhole size={22} color={C.caramelDeep}/>
+          </div>
+          <div>
+            <Eyebrow>{isSetup ? "Primeiro acesso" : "Acesso privado"}</Eyebrow>
+            <div style={{fontFamily:F.display,fontSize:24,fontWeight:600,lineHeight:1.05}}>Finanças do Casal</div>
+          </div>
+        </div>
+
+        <form onSubmit={submit}>
+          {isSetup&&(
+            <>
+              <Eyebrow style={{marginBottom:5}}>Nome do admin</Eyebrow>
+              <Input value={form.name} onChange={e=>s("name",e.target.value)} placeholder="Rubens" style={{marginBottom:10}}/>
+            </>
+          )}
+          <Eyebrow style={{marginBottom:5}}>Usuário</Eyebrow>
+          <Input autoFocus value={form.login} onChange={e=>s("login",e.target.value)} placeholder="rubens" autoComplete="username" style={{marginBottom:10}}/>
+          <Eyebrow style={{marginBottom:5}}>Senha</Eyebrow>
+          <Input type="password" value={form.password} onChange={e=>s("password",e.target.value)} placeholder="Sua senha" autoComplete={isSetup?"new-password":"current-password"} style={{marginBottom:isSetup?10:14}}/>
+          {isSetup&&(
+            <>
+              <Eyebrow style={{marginBottom:5}}>Confirmar senha</Eyebrow>
+              <Input type="password" value={form.confirm} onChange={e=>s("confirm",e.target.value)} placeholder="Repita a senha" autoComplete="new-password" style={{marginBottom:14}}/>
+            </>
+          )}
+          {error&&(
+            <div style={{background:C.redPale,border:`1px solid rgba(194,65,58,0.18)`,borderRadius:12,padding:"10px 12px",fontSize:12.5,color:C.red,marginBottom:12,fontWeight:700}}>
+              {error}
+            </div>
+          )}
+          <Btn variant="gold" disabled={busy} style={{width:"100%"}}>
+            {busy ? <Loader2 size={15} style={{animation:"spin 1s linear infinite"}}/> : <LockKeyhole size={15}/>}
+            {isSetup ? "Criar admin e entrar" : "Entrar"}
+          </Btn>
+        </form>
+
+        <div style={{marginTop:14,fontSize:12.3,lineHeight:1.5,color:C.muted,background:C.bluePale,border:`1px solid rgba(37,99,168,0.14)`,borderRadius:12,padding:"10px 12px",display:"flex",gap:8}}>
+          <ShieldCheck size={15} color={C.blue} style={{flexShrink:0,marginTop:1}}/>
+          <span>{isSetup ? "Crie o acesso principal deste aparelho. Depois, novos usuários ficam na aba Admin." : "Se precisar de outro usuário, peça para o admin criar o acesso na aba Admin."}</span>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function AdminPanel({ auth, currentUser, data, onCreateUser, onDeleteUser, onLogout }) {
+  const [form, setForm] = useState({ name:"Nayara", login:"nayara", password:"", role:"user" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const s = (k,v) => { setForm(f=>({...f,[k]:v})); setError(""); };
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    const result = await onCreateUser(form);
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.message);
+      return;
+    }
+    setForm({ name:"", login:"", password:"", role:"user" });
+  };
+
+  return (
+    <div className="su">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <div>
+          <div style={{fontFamily:F.display,fontSize:22,fontWeight:600}}>Admin</div>
+          <div style={{fontSize:12,color:C.muted}}>Sessão: <b>{currentUser.name}</b></div>
+        </div>
+        <Btn variant="outline" small onClick={onLogout}><LogOut size={14}/> Sair</Btn>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
+        <Card style={{padding:14,background:C.greenPale,border:`1px solid rgba(23,129,95,0.16)`}}>
+          <Eyebrow style={{color:C.green}}>Lançamentos</Eyebrow>
+          <div style={{fontFamily:F.display,fontSize:22,fontWeight:600,color:C.green,marginTop:4}}>{data.transactions.length}</div>
+        </Card>
+        <Card style={{padding:14,background:C.plumPale,border:`1px solid rgba(91,75,178,0.15)`}}>
+          <Eyebrow style={{color:C.plum}}>Acessos</Eyebrow>
+          <div style={{fontFamily:F.display,fontSize:22,fontWeight:600,color:C.plum,marginTop:4}}>{auth.users.length}</div>
+        </Card>
+      </div>
+
+      <Card style={{marginBottom:14}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+          <UserPlus size={17} color={C.caramelDeep}/>
+          <div style={{fontFamily:F.display,fontSize:17,fontWeight:600}}>Criar acesso</div>
+        </div>
+        <form onSubmit={submit}>
+          <div style={{display:"flex",gap:8,marginBottom:10}}>
+            <div style={{flex:1}}>
+              <Eyebrow style={{marginBottom:5}}>Nome</Eyebrow>
+              <Input value={form.name} onChange={e=>s("name",e.target.value)} placeholder="Nayara"/>
+            </div>
+            <div style={{flex:1}}>
+              <Eyebrow style={{marginBottom:5}}>Usuário</Eyebrow>
+              <Input value={form.login} onChange={e=>s("login",e.target.value)} placeholder="nayara" autoComplete="off"/>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:8,marginBottom:12}}>
+            <div style={{flex:1}}>
+              <Eyebrow style={{marginBottom:5}}>Senha</Eyebrow>
+              <Input type="password" value={form.password} onChange={e=>s("password",e.target.value)} placeholder="Senha" autoComplete="new-password"/>
+            </div>
+            <div style={{flex:1}}>
+              <Eyebrow style={{marginBottom:5}}>Perfil</Eyebrow>
+              <Select value={form.role} onChange={e=>s("role",e.target.value)}>
+                <option value="user">Usuário</option>
+                <option value="admin">Admin</option>
+              </Select>
+            </div>
+          </div>
+          {error&&<div style={{fontSize:12.5,color:C.red,fontWeight:700,marginBottom:10}}>{error}</div>}
+          <Btn variant="gold" disabled={busy} style={{width:"100%"}}>
+            {busy ? <Loader2 size={14} style={{animation:"spin 1s linear infinite"}}/> : <UserPlus size={15}/>}
+            Criar usuário
+          </Btn>
+        </form>
+      </Card>
+
+      <Card style={{marginBottom:14}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+          <Users size={17} color={C.plum}/>
+          <div style={{fontFamily:F.display,fontSize:17,fontWeight:600}}>Usuários</div>
+        </div>
+        {auth.users.map(user=>(
+          <div key={user.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:`1px solid ${C.hairline}`}}>
+            <div style={{width:38,height:38,borderRadius:12,background:user.role==="admin"?C.greenPale:C.bgAlt,display:"flex",alignItems:"center",justifyContent:"center"}}>
+              {user.role==="admin"?<ShieldCheck size={17} color={C.caramelDeep}/>:<UserRound size={17} color={C.inkSoft}/>}
+            </div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontWeight:800,fontSize:13.5,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{user.name}</div>
+              <div style={{fontSize:11.5,color:C.muted}}>@{user.login} · {user.role==="admin"?"admin":"usuário"}</div>
+            </div>
+            {user.id!==currentUser.id&&(
+              <button onClick={()=>onDeleteUser(user.id)} style={{background:C.redPale,border:"none",borderRadius:10,padding:8,cursor:"pointer",display:"flex"}}>
+                <Trash2 size={14} color={C.red}/>
+              </button>
+            )}
+          </div>
+        ))}
+      </Card>
+
+      <div style={{background:C.amberPale,border:`1px solid rgba(154,106,16,0.16)`,borderRadius:14,padding:"12px 13px",fontSize:12.4,lineHeight:1.45,color:C.amber,display:"flex",gap:8}}>
+        <ShieldCheck size={16} color={C.amber} style={{flexShrink:0,marginTop:1}}/>
+        <span>Proteção local ativa. Para senha centralizada entre celulares e bloqueio real no servidor, o próximo passo é conectar um banco online com autenticação.</span>
+      </div>
     </div>
   );
 }
