@@ -1476,7 +1476,7 @@ function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, syncSta
 
 function OnlineWorkspaceGate({ user, onCreateWorkspace, onAcceptInvite, onLogout }) {
   const displayFallback = user?.user_metadata?.display_name || user?.email?.split("@")[0] || "";
-  const [mode, setMode] = useState("create");
+  const [mode, setMode] = useState(null); // null = pergunta ainda nao respondida
   const [form, setForm] = useState({ displayName:displayFallback, code:"" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -1508,14 +1508,35 @@ function OnlineWorkspaceGate({ user, onCreateWorkspace, onAcceptInvite, onLogout
           </button>
         </div>
 
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
-          <button type="button" onClick={()=>setMode("create")} style={{border:`1.5px solid ${mode==="create"?C.ink:C.border}`,background:mode==="create"?C.ink:C.surface,color:mode==="create"?"#F6F1E7":C.inkSoft,borderRadius:13,padding:"10px 12px",fontWeight:800,cursor:"pointer",fontFamily:F.body}}>Começar do zero</button>
-          <button type="button" onClick={()=>setMode("join")} style={{border:`1.5px solid ${mode==="join"?C.ink:C.border}`,background:mode==="join"?C.ink:C.surface,color:mode==="join"?"#F6F1E7":C.inkSoft,borderRadius:13,padding:"10px 12px",fontWeight:800,cursor:"pointer",fontFamily:F.body}}>Tenho um código</button>
-        </div>
+        {mode===null&&(
+          <>
+            <div style={{fontSize:14,fontWeight:700,marginBottom:14,lineHeight:1.4}}>Alguém já te convidou pra usar o app junto com ela?</div>
+            <button type="button" onClick={()=>setMode("join")} style={{width:"100%",textAlign:"left",border:`1.5px solid ${C.border}`,background:C.surface,borderRadius:14,padding:"14px 16px",marginBottom:10,cursor:"pointer",fontFamily:F.body,display:"flex",alignItems:"center",gap:12}}>
+              <div style={{width:36,height:36,borderRadius:11,background:C.bluePale,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><KeyRound size={17} color={C.blue}/></div>
+              <div>
+                <div style={{fontWeight:800,fontSize:14}}>Sim, tenho um código</div>
+                <div style={{fontSize:11.5,color:C.muted,marginTop:2}}>Vou entrar na área de quem me convidou</div>
+              </div>
+            </button>
+            <button type="button" onClick={()=>setMode("create")} style={{width:"100%",textAlign:"left",border:`1.5px solid ${C.border}`,background:C.surface,borderRadius:14,padding:"14px 16px",cursor:"pointer",fontFamily:F.body,display:"flex",alignItems:"center",gap:12}}>
+              <div style={{width:36,height:36,borderRadius:11,background:C.greenPale,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><ShieldCheck size={17} color={C.green}/></div>
+              <div>
+                <div style={{fontWeight:800,fontSize:14}}>Não, vou começar agora</div>
+                <div style={{fontSize:11.5,color:C.muted,marginTop:2}}>Cria uma área 100% minha, separada de qualquer pessoa</div>
+              </div>
+            </button>
+          </>
+        )}
+
+        {mode!==null&&(
+        <>
+        <button type="button" onClick={()=>{setMode(null);setError("");}} style={{background:"none",border:"none",padding:0,marginBottom:14,cursor:"pointer",display:"flex",alignItems:"center",gap:4,color:C.muted,fontSize:12,fontWeight:700,fontFamily:F.body}}>
+          <ChevronLeft size={14}/> Voltar
+        </button>
         <div style={{fontSize:12,color:C.muted,lineHeight:1.5,marginBottom:16,background:"#FBF7EE",border:`1px solid ${C.border}`,borderRadius:12,padding:"9px 12px"}}>
           {mode==="create"
             ? "Cria uma área 100% sua, separada de qualquer outra pessoa. Depois, se quiser, você mesmo convida alguém pra dividir com você."
-            : "Alguém te passou um código? Você entra na área DESSA pessoa, vendo os mesmos lançamentos dela."}
+            : "Você vai entrar na área de quem te passou o código, vendo os mesmos lançamentos dela."}
         </div>
 
         <form onSubmit={submit}>
@@ -1530,9 +1551,11 @@ function OnlineWorkspaceGate({ user, onCreateWorkspace, onAcceptInvite, onLogout
           {error&&<div style={{fontSize:12.5,color:C.red,fontWeight:700,marginBottom:10}}>{error}</div>}
           <Btn variant="gold" disabled={busy} style={{width:"100%"}}>
             {busy ? <Loader2 size={15} style={{animation:"spin 1s linear infinite"}}/> : <ShieldCheck size={15}/>}
-            {mode==="create" ? "Criar espaço" : "Entrar no espaço"}
+            {mode==="create" ? "Criar minha área" : "Entrar no espaço"}
           </Btn>
         </form>
+        </>
+        )}
       </Card>
     </div>
   );
