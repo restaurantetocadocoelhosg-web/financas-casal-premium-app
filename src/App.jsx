@@ -322,7 +322,7 @@ function compressImage(file, maxDim = 900, quality = 0.72) {
 }
 
 /* ── storage ── */
-const DEFAULT_DATA = { transactions:[], goals:[], fixedExpenses:[], avatars:{} };
+const DEFAULT_DATA = { transactions:[], goals:[], fixedExpenses:[], avatars:{}, customCategories:[] };
 const sanitizeData = (input) => ({
   ...DEFAULT_DATA,
   ...input,
@@ -330,7 +330,29 @@ const sanitizeData = (input) => ({
   goals: Array.isArray(input?.goals) ? input.goals : [],
   fixedExpenses: Array.isArray(input?.fixedExpenses) ? input.fixedExpenses : [],
   avatars: input?.avatars && typeof input.avatars === "object" ? input.avatars : {},
+  customCategories: Array.isArray(input?.customCategories)
+    ? input.customCategories.filter(c=>c && typeof c.name==="string" && c.name.trim()).map(c=>({
+        name: c.name.trim(),
+        emoji: (typeof c.emoji==="string" && c.emoji.trim()) ? c.emoji.trim() : "📦",
+        tipo: c.tipo==="ganho" ? "ganho" : "gasto",
+      }))
+    : [],
 });
+
+// Junta categorias base + as criadas pelo admin (custom vêm antes de "Outros").
+function catsForTipo(tipo, custom=[]) {
+  const base = tipo==="ganho" ? CAT_GANHO : CAT_GASTO;
+  const outros = tipo==="ganho" ? "Outros ganhos" : "Outros";
+  const baseSemOutros = base.filter(c=>c!==outros);
+  const nomesBase = new Set(base.map(c=>c.toLowerCase()));
+  const extras = custom.filter(c=>c.tipo===tipo && !nomesBase.has(c.name.toLowerCase())).map(c=>c.name);
+  return [...baseSemOutros, ...extras, outros];
+}
+function emojiFor(cat, custom=[]) {
+  if (EMOJI[cat]) return EMOJI[cat];
+  const c = (custom||[]).find(x=>x.name===cat);
+  return c?.emoji || "📦";
+}
 const hasFinancialData = (input) => {
   const d = sanitizeData(input);
   return Boolean(
@@ -630,6 +652,7 @@ const Btn = ({children, variant="dark", onClick, disabled, style, small}) => {
     plum:    { background:C.plum, color:"#fff" },
     ghost:   { background:"#FBF7EE", color:C.inkSoft, border:`1px solid ${C.border}` },
     outline: { background:"transparent", color:C.muted, border:`1.5px solid ${C.border}` },
+    danger:  { background:C.red, color:"#fff" },
   };
   return (
     <button onClick={onClick} disabled={disabled} style={{
@@ -1199,6 +1222,44 @@ export default function App() {
     showToast("Backup importado ✓");
   },[persist,showToast]);
 
+  // Categorias criadas pelo admin (guardadas no estado do workspace, sincronizam online).
+  const addCategory = useCallback((name, emoji, tipo)=>{
+    const clean = String(name||"").trim();
+    if (!clean) return { ok:false, message:"Dê um nome à categoria." };
+    const jaExiste = catsForTipo(tipo, data.customCategories).some(c=>c.toLowerCase()===clean.toLowerCase());
+    if (jaExiste) return { ok:false, message:"Essa categoria já existe." };
+    const nova = { name:clean, emoji:(emoji||"📦").trim()||"📦", tipo:tipo==="ganho"?"ganho":"gasto" };
+    persist({...data, customCategories:[...data.customCategories, nova]});
+    showToast("Categoria criada ✓");
+    return { ok:true };
+  },[data,persist,showToast]);
+
+  const updateCategory = useCallback((oldName, tipo, patch)=>{
+    const nextName = patch.name!==undefined ? String(patch.name).trim() : oldName;
+    if (!nextName) return { ok:false, message:"O nome não pode ficar vazio." };
+    if (nextName.toLowerCase()!==oldName.toLowerCase()) {
+      const colide = catsForTipo(tipo, data.customCategories).some(c=>c.toLowerCase()===nextName.toLowerCase());
+      if (colide) return { ok:false, message:"Já existe uma categoria com esse nome." };
+    }
+    const customCategories = data.customCategories.map(c=>
+      (c.name===oldName && c.tipo===tipo)
+        ? { ...c, name:nextName, emoji:(patch.emoji!==undefined?(patch.emoji||"📦"):c.emoji) }
+        : c
+    );
+    // Renomeia também nos lançamentos já feitos, pra não "perder" o histórico.
+    const transactions = nextName!==oldName
+      ? data.transactions.map(t=>t.categoria===oldName ? {...t, categoria:nextName} : t)
+      : data.transactions;
+    persist({...data, customCategories, transactions});
+    showToast("Categoria atualizada ✓");
+    return { ok:true };
+  },[data,persist,showToast]);
+
+  const deleteCategory = useCallback((name, tipo)=>{
+    persist({...data, customCategories:data.customCategories.filter(c=>!(c.name===name && c.tipo===tipo))});
+    showToast("Categoria removida ✓");
+  },[data,persist,showToast]);
+
   const txMonth = useMemo(()=>data.transactions.filter(t=>{
     const d = new Date(t.data+"T12:00:00");
     return d.getFullYear()===month.y && d.getMonth()===month.m && (person==="Todos"||t.pessoa===person);
@@ -1285,8 +1346,8 @@ export default function App() {
           <button onClick={()=>setMonth(m=>m.m===11?{y:m.y+1,m:0}:{y:m.y,m:m.m+1})} style={{background:"none",border:"none",padding:8,cursor:"pointer",display:"flex"}}><ChevronRight size={18} color={C.muted}/></button>
         </div>
 
-        {tab==="home"    && <Dashboard tx={txMonth} allTx={data.transactions} month={month} fixed={data.fixedExpenses} avatars={data.avatars} people={people} onNewAI={()=>setAiOpen(true)} onNewNota={()=>setNotaOpen(true)} onNewManual={newManualTx} onOpenReports={()=>setReportOpen(true)} onAddFixed={addFixed} onDeleteFixed={deleteFixed}/>}
-        {tab==="extrato" && <Extrato tx={txMonth} avatars={data.avatars} onDelete={deleteTx} onEdit={setEditing} onViewPhoto={setPhotoView}/>}
+        {tab==="home"    && <Dashboard tx={txMonth} allTx={data.transactions} month={month} fixed={data.fixedExpenses} avatars={data.avatars} people={people} customCategories={data.customCategories} onNewAI={()=>setAiOpen(true)} onNewNota={()=>setNotaOpen(true)} onNewManual={newManualTx} onOpenReports={()=>setReportOpen(true)} onAddFixed={addFixed} onDeleteFixed={deleteFixed}/>}
+        {tab==="extrato" && <Extrato tx={txMonth} avatars={data.avatars} customCategories={data.customCategories} onDelete={deleteTx} onEdit={setEditing} onViewPhoto={setPhotoView}/>}
         {tab==="metas"   && <Metas goals={data.goals} onAdd={addGoal} onUpdate={updateGoal} onDelete={deleteGoal}/>}
         {tab==="chat"    && <ChatIA transactions={data.transactions} fixedExpenses={data.fixedExpenses} goals={data.goals} avatars={data.avatars} people={people}/>}
         {tab==="admin"   && effectiveUser?.role==="admin" && (
@@ -1300,6 +1361,9 @@ export default function App() {
                 lastSyncedAt={lastSyncedAt}
                 onCreateInvite={createOnlineInvite}
                 onRefresh={()=>onlineUser && loadOnlineWorkspace(onlineUser, data)}
+                onAddCategory={addCategory}
+                onUpdateCategory={updateCategory}
+                onDeleteCategory={deleteCategory}
                 onLogout={logout}
               />
             : <AdminPanel auth={auth} currentUser={publicUser(currentUser)} data={data} onCreateUser={createUser} onDeleteUser={deleteUser} onLogout={logout}/>
@@ -1321,9 +1385,9 @@ export default function App() {
       </div>
 
       {/* ── MODAIS ── */}
-      {aiOpen     && <AISheet defaultPerson={person==="Todos"?people[0]:person} people={people} avatars={data.avatars} onClose={()=>setAiOpen(false)} onConfirm={(tx)=>{addTx(tx);setAiOpen(false);}} onOpenNota={()=>{setAiOpen(false);setNotaOpen(true);}}/>}
-      {notaOpen   && <NotaSheet defaultPerson={person==="Todos"?people[0]:person} people={people} avatars={data.avatars} onClose={()=>setNotaOpen(false)} onConfirm={(tx,foto)=>{addTx(tx,foto);setNotaOpen(false);}}/>}
-      {editing    && <EditSheet tx={editing} avatars={data.avatars} people={people} onClose={()=>setEditing(null)} onSave={(tx,foto,fotoRemovida)=>{tx.id?updateTx(tx,foto,fotoRemovida):addTx(tx,foto);setEditing(null);}}/>}
+      {aiOpen     && <AISheet defaultPerson={person==="Todos"?people[0]:person} people={people} avatars={data.avatars} customCategories={data.customCategories} onAddCategory={addCategory} onClose={()=>setAiOpen(false)} onConfirm={(tx)=>{addTx(tx);setAiOpen(false);}} onOpenNota={()=>{setAiOpen(false);setNotaOpen(true);}}/>}
+      {notaOpen   && <NotaSheet defaultPerson={person==="Todos"?people[0]:person} people={people} avatars={data.avatars} customCategories={data.customCategories} onAddCategory={addCategory} onClose={()=>setNotaOpen(false)} onConfirm={(tx,foto)=>{addTx(tx,foto);setNotaOpen(false);}}/>}
+      {editing    && <EditSheet tx={editing} avatars={data.avatars} people={people} customCategories={data.customCategories} onAddCategory={addCategory} onClose={()=>setEditing(null)} onSave={(tx,foto,fotoRemovida)=>{tx.id?updateTx(tx,foto,fotoRemovida):addTx(tx,foto);setEditing(null);}}/>}
       {searchOpen && <SearchModal transactions={data.transactions} avatars={data.avatars} onClose={()=>setSearchOpen(false)} onEdit={t=>{setSearchOpen(false);setEditing(t);}} onDelete={deleteTx} onViewPhoto={setPhotoView}/>}
       {profileOpen&& <ProfileSheet avatars={data.avatars} people={people} onSetAvatar={setAvatar} onClose={()=>setProfileOpen(false)}/>}
       {reportOpen && <ReportSheet data={data} month={month} person={person} onClose={()=>setReportOpen(false)} onImport={importData}/>}
@@ -1575,7 +1639,7 @@ function OnlineWorkspaceGate({ user, onCreateWorkspace, onAcceptInvite, onLogout
   );
 }
 
-function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, lastSyncedAt, onCreateInvite, onRefresh, onLogout }) {
+function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, lastSyncedAt, onCreateInvite, onRefresh, onAddCategory, onUpdateCategory, onDeleteCategory, onLogout }) {
   const [role, setRole] = useState("member");
   const [invite, setInvite] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -1678,6 +1742,8 @@ function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, l
 
       <ShareAppCard/>
 
+      <CategoriesManager customCategories={data.customCategories||[]} onAddCategory={onAddCategory} onUpdateCategory={onUpdateCategory} onDeleteCategory={onDeleteCategory}/>
+
       <Card style={{marginBottom:14}}>
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
           <Users size={17} color={C.plum}/>
@@ -1696,6 +1762,82 @@ function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, l
         ))}
       </Card>
     </div>
+  );
+}
+
+function CategoriesManager({ customCategories=[], onAddCategory, onUpdateCategory, onDeleteCategory }) {
+  const [tipo, setTipo] = useState("gasto");
+  const [nova, setNova] = useState({ name:"", emoji:"📦" });
+  const [erro, setErro] = useState("");
+  const [editando, setEditando] = useState(null); // name da categoria em edição
+  const [editForm, setEditForm] = useState({ name:"", emoji:"" });
+  const [confirmDel, setConfirmDel] = useState(null);
+
+  const minhas = customCategories.filter(c=>c.tipo===tipo);
+
+  const criar = () => {
+    const r = onAddCategory(nova.name, nova.emoji, tipo);
+    if (!r.ok) { setErro(r.message); return; }
+    setNova({ name:"", emoji:"📦" }); setErro("");
+  };
+  const salvarEdicao = (oldName) => {
+    const r = onUpdateCategory(oldName, tipo, { name:editForm.name, emoji:editForm.emoji });
+    if (!r.ok) { setErro(r.message); return; }
+    setEditando(null); setErro("");
+  };
+
+  return (
+    <Card style={{marginBottom:14}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+        <List size={17} color={C.caramelDeep}/>
+        <div style={{fontFamily:F.display,fontSize:17,fontWeight:600}}>Categorias</div>
+      </div>
+      <div style={{fontSize:12,color:C.muted,marginBottom:12,lineHeight:1.5}}>Crie categorias que faltam (ex.: Curso, Academia). Aparecem na hora de lançar. As categorias padrão não podem ser apagadas.</div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+        {[["gasto","Gastos"],["ganho","Ganhos"]].map(([tp,lb])=>(
+          <button key={tp} type="button" onClick={()=>{setTipo(tp);setErro("");setEditando(null);}} style={{border:`1.5px solid ${tipo===tp?C.ink:C.border}`,background:tipo===tp?C.ink:C.surface,color:tipo===tp?"#F6F1E7":C.inkSoft,borderRadius:12,padding:"8px 12px",fontWeight:800,cursor:"pointer",fontFamily:F.body,fontSize:13}}>{lb}</button>
+        ))}
+      </div>
+
+      <div style={{display:"flex",gap:8,marginBottom:6}}>
+        <Input value={nova.emoji} onChange={e=>setNova(v=>({...v,emoji:e.target.value.slice(0,2)}))} placeholder="📦" style={{width:56,textAlign:"center",fontSize:18}}/>
+        <Input value={nova.name} onChange={e=>{setNova(v=>({...v,name:e.target.value}));setErro("");}} placeholder={tipo==="gasto"?"Ex.: Curso":"Ex.: Aluguel recebido"} style={{flex:1}}/>
+        <Btn variant="gold" small onClick={criar} disabled={!nova.name.trim()}><Plus size={14}/></Btn>
+      </div>
+      {erro&&<div style={{fontSize:11.5,color:C.red,fontWeight:700,marginBottom:8}}>{erro}</div>}
+
+      <div style={{marginTop:10}}>
+        {minhas.length===0
+          ? <div style={{fontSize:12,color:C.muted,textAlign:"center",padding:"10px 0"}}>Nenhuma categoria criada ainda para {tipo==="gasto"?"gastos":"ganhos"}.</div>
+          : minhas.map(c=>(
+            <div key={c.name} style={{padding:"8px 0",borderTop:`1px solid ${C.hairline}`}}>
+              {editando===c.name ? (
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  <Input value={editForm.emoji} onChange={e=>setEditForm(v=>({...v,emoji:e.target.value.slice(0,2)}))} style={{width:48,textAlign:"center",fontSize:16}}/>
+                  <Input value={editForm.name} onChange={e=>setEditForm(v=>({...v,name:e.target.value}))} style={{flex:1}} autoFocus/>
+                  <Btn variant="gold" small onClick={()=>salvarEdicao(c.name)}><Check size={13}/></Btn>
+                  <button onClick={()=>{setEditando(null);setErro("");}} style={{background:"none",border:"none",cursor:"pointer",color:C.muted,fontSize:12,fontWeight:700}}>✕</button>
+                </div>
+              ) : confirmDel===c.name ? (
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  <span style={{flex:1,fontSize:12.5,color:C.red,fontWeight:700}}>Apagar "{c.name}"? Lançamentos antigos ficam guardados.</span>
+                  <Btn variant="outline" small onClick={()=>setConfirmDel(null)}>Não</Btn>
+                  <Btn variant="danger" small onClick={()=>{onDeleteCategory(c.name,tipo);setConfirmDel(null);}}>Apagar</Btn>
+                </div>
+              ) : (
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <span style={{fontSize:18}}>{c.emoji}</span>
+                  <span style={{flex:1,fontWeight:700,fontSize:13.5}}>{c.name}</span>
+                  <button onClick={()=>{setEditando(c.name);setEditForm({name:c.name,emoji:c.emoji});setErro("");}} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:9,padding:7,cursor:"pointer",display:"flex"}}><Pencil size={13} color={C.inkSoft}/></button>
+                  <button onClick={()=>setConfirmDel(c.name)} style={{background:C.redPale,border:"none",borderRadius:9,padding:7,cursor:"pointer",display:"flex"}}><Trash2 size={13} color={C.red}/></button>
+                </div>
+              )}
+            </div>
+          ))
+        }
+      </div>
+    </Card>
   );
 }
 
@@ -1977,7 +2119,7 @@ function AdminPanel({ auth, currentUser, data, onCreateUser, onDeleteUser, onLog
 /* ═══════════════════════════════════════════════
    DASHBOARD
 ═══════════════════════════════════════════════ */
-function Dashboard({ tx, allTx, month, fixed, avatars, people=[], onNewAI, onNewNota, onNewManual, onOpenReports, onAddFixed, onDeleteFixed }) {
+function Dashboard({ tx, allTx, month, fixed, avatars, people=[], customCategories=[], onNewAI, onNewNota, onNewManual, onOpenReports, onAddFixed, onDeleteFixed }) {
   const [calOpen, setCalOpen] = useState(false);
   const [fixOpen, setFixOpen] = useState(false);
 
@@ -2074,7 +2216,7 @@ function Dashboard({ tx, allTx, month, fixed, avatars, people=[], onNewAI, onNew
             {topCat&&(
               <Card style={{padding:14,background:C.goldPale,border:`1px solid rgba(181,121,63,0.18)`}}>
                 <Eyebrow style={{color:C.caramelDeep}}>Top categoria</Eyebrow>
-                <div style={{fontSize:22,margin:"6px 0 2px"}}>{EMOJI[topCat.name]||"📦"}</div>
+                <div style={{fontSize:22,margin:"6px 0 2px"}}>{emojiFor(topCat.name,customCategories)}</div>
                 <div style={{fontWeight:800,fontSize:13.5,color:C.ink}}>{topCat.name}</div>
                 <div style={{fontFamily:F.display,fontSize:16,fontWeight:600,color:C.caramelDeep}}>{fmt(topCat.value)}</div>
               </Card>
@@ -2082,7 +2224,7 @@ function Dashboard({ tx, allTx, month, fixed, avatars, people=[], onNewAI, onNew
             {maiorCompra&&(
               <Card style={{padding:14,background:C.plumPale,border:`1px solid rgba(91,58,142,0.14)`}}>
                 <Eyebrow style={{color:C.plum}}>Maior compra</Eyebrow>
-                <div style={{fontSize:22,margin:"6px 0 2px"}}>{EMOJI[maiorCompra.categoria]||"📦"}</div>
+                <div style={{fontSize:22,margin:"6px 0 2px"}}>{emojiFor(maiorCompra.categoria,customCategories)}</div>
                 <div style={{fontWeight:800,fontSize:13.5,color:C.ink,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{maiorCompra.descricao||maiorCompra.categoria}</div>
                 <div style={{fontFamily:F.display,fontSize:16,fontWeight:600,color:C.plum}}>{fmt(maiorCompra.valor)}</div>
               </Card>
@@ -2177,7 +2319,7 @@ function Dashboard({ tx, allTx, month, fixed, avatars, people=[], onNewAI, onNew
           </div>
           <ChevronDown size={16} color={C.muted} style={{transform:fixOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/>
         </div>
-        {fixOpen&&<FixedSection fixed={fixed} onAdd={onAddFixed} onDelete={onDeleteFixed}/>}
+        {fixOpen&&<FixedSection fixed={fixed} onAdd={onAddFixed} onDelete={onDeleteFixed} customCategories={customCategories}/>}
       </Card>
     </div>
   );
@@ -2223,7 +2365,7 @@ function FinCalendar({ tx, month, avatars }) {
             : dayTx.map(t=>(
               <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderTop:`1px solid ${C.hairline}`}}>
                 <Avatar name={t.pessoa} avatars={avatars} size={22} ring={false}/>
-                <span style={{fontSize:15}}>{EMOJI[t.categoria]||"📦"}</span>
+                <span style={{fontSize:15}}>{emojiFor(t.categoria,customCategories)}</span>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:12.5,fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.descricao||t.categoria}</div>
                   <div style={{fontSize:10.5,color:C.muted}}>{t.categoria} · {t.pessoa}</div>
@@ -2239,7 +2381,7 @@ function FinCalendar({ tx, month, avatars }) {
 }
 
 /* ── GASTOS FIXOS ── */
-function FixedSection({ fixed, onAdd, onDelete }) {
+function FixedSection({ fixed, onAdd, onDelete, customCategories=[] }) {
   const [form, setForm] = useState({nome:"",valor:"",dia:1,categoria:"Energia"});
   const [adding, setAdding] = useState(false);
   const total = fixed.reduce((s,f)=>s+Number(f.valor),0);
@@ -2247,7 +2389,7 @@ function FixedSection({ fixed, onAdd, onDelete }) {
     <div style={{marginTop:12}} onClick={e=>e.stopPropagation()}>
       {fixed.map(f=>(
         <div key={f.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:`1px solid ${C.hairline}`}}>
-          <div style={{fontSize:18}}>{EMOJI[f.categoria]||"🔁"}</div>
+          <div style={{fontSize:18}}>{EMOJI[f.categoria]||emojiFor(f.categoria,customCategories)}</div>
           <div style={{flex:1}}>
             <div style={{fontSize:13.5,fontWeight:700}}>{f.nome}</div>
             <div style={{fontSize:11,color:C.muted}}>Vence dia {f.dia}</div>
@@ -2265,7 +2407,7 @@ function FixedSection({ fixed, onAdd, onDelete }) {
           </div>
           <div style={{display:"flex",gap:8}}>
             <Input type="number" min={1} max={31} placeholder="Dia" value={form.dia} onChange={e=>setForm({...form,dia:Number(e.target.value)})} style={{flex:1}}/>
-            <Select value={form.categoria} onChange={e=>setForm({...form,categoria:e.target.value})} style={{flex:2}}>{CAT_GASTO.map(c=><option key={c}>{c}</option>)}</Select>
+            <Select value={form.categoria} onChange={e=>setForm({...form,categoria:e.target.value})} style={{flex:2}}>{catsForTipo("gasto",customCategories).map(c=><option key={c}>{c}</option>)}</Select>
           </div>
           <div style={{display:"flex",gap:8}}>
             <Btn variant="outline" small onClick={()=>setAdding(false)} style={{flex:1}}>Cancelar</Btn>
@@ -2283,7 +2425,7 @@ function FixedSection({ fixed, onAdd, onDelete }) {
 /* ═══════════════════════════════════════════════
    EXTRATO
 ═══════════════════════════════════════════════ */
-function Extrato({ tx, avatars, onDelete, onEdit, onViewPhoto }) {
+function Extrato({ tx, avatars, customCategories=[], onDelete, onEdit, onViewPhoto }) {
   const [filter, setFilter] = useState("todos");
   const filtered = tx.filter(t=>filter==="todos"||t.tipo===filter);
   const groups = filtered.reduce((a,t)=>{(a[t.data]=a[t.data]||[]).push(t);return a;},{});
@@ -2329,7 +2471,7 @@ function TxRow({ t, avatars, onDelete, onEdit, onViewPhoto }) {
     <div style={{display:"flex",alignItems:"center",gap:10,padding:"12px 0",borderBottom:`1px solid ${C.hairline}`}}>
       <div style={{position:"relative",flexShrink:0}}>
         <div style={{width:40,height:40,borderRadius:13,background:t.tipo==="ganho"?C.greenPale:C.bgAlt,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>
-          {EMOJI[t.categoria]||"📦"}
+          {emojiFor(t.categoria,customCategories)}
         </div>
         <div style={{position:"absolute",bottom:-4,right:-4}}>
           <Avatar name={t.pessoa} avatars={avatars} size={20} ring={false}/>
@@ -2441,7 +2583,7 @@ function Metas({ goals, onAdd, onUpdate, onDelete }) {
 /* ═══════════════════════════════════════════════
    AGENTE POR VOZ / TEXTO
 ═══════════════════════════════════════════════ */
-function AISheet({ onClose, onConfirm, defaultPerson, people=[], avatars, onOpenNota }) {
+function AISheet({ onClose, onConfirm, defaultPerson, people=[], avatars, customCategories=[], onAddCategory, onOpenNota }) {
   const [text, setText] = useState("");
   const [listening, setListening] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -2494,7 +2636,7 @@ function AISheet({ onClose, onConfirm, defaultPerson, people=[], avatars, onOpen
           </button>
         </>
       ):(
-        <TxForm tx={pending} avatars={avatars} people={people} onChange={setPending} onCancel={()=>setPending(null)} onSave={()=>onConfirm({...pending,valor:Number(pending.valor)})} saveLabel="Confirmar e salvar"/>
+        <TxForm tx={pending} avatars={avatars} people={people} customCategories={customCategories} onAddCategory={onAddCategory} onChange={setPending} onCancel={()=>setPending(null)} onSave={()=>onConfirm({...pending,valor:Number(pending.valor)})} saveLabel="Confirmar e salvar"/>
       )}
     </Sheet>
   );
@@ -2503,7 +2645,7 @@ function AISheet({ onClose, onConfirm, defaultPerson, people=[], avatars, onOpen
 /* ═══════════════════════════════════════════════
    NOTA FISCAL / RECIBO COM FOTO
 ═══════════════════════════════════════════════ */
-function NotaSheet({ onClose, onConfirm, defaultPerson, people=[], avatars }) {
+function NotaSheet({ onClose, onConfirm, defaultPerson, people=[], avatars, customCategories=[], onAddCategory }) {
   const [foto, setFoto] = useState(null);
   const [pending, setPending] = useState(null);
   const [error, setError] = useState("");
@@ -2563,7 +2705,7 @@ function NotaSheet({ onClose, onConfirm, defaultPerson, people=[], avatars }) {
         </>
       ):(
         <>
-          <TxForm tx={pending} avatars={avatars} people={people} onChange={setPending} onCancel={()=>setPending(null)} onSave={()=>onConfirm({...pending,valor:Number(pending.valor)}, foto)} saveLabel="Salvar com a foto"/>
+          <TxForm tx={pending} avatars={avatars} people={people} customCategories={customCategories} onAddCategory={onAddCategory} onChange={setPending} onCancel={()=>setPending(null)} onSave={()=>onConfirm({...pending,valor:Number(pending.valor)}, foto)} saveLabel="Salvar com a foto"/>
         </>
       )}
     </Sheet>
@@ -2573,7 +2715,7 @@ function NotaSheet({ onClose, onConfirm, defaultPerson, people=[], avatars }) {
 /* ═══════════════════════════════════════════════
    FORM DE LANÇAMENTO (+ anexar foto)
 ═══════════════════════════════════════════════ */
-function EditSheet({ tx, avatars, people=[], onClose, onSave }) {
+function EditSheet({ tx, avatars, people=[], customCategories=[], onAddCategory, onClose, onSave }) {
   const [form, setForm] = useState({...tx});
   const [foto, setFoto] = useState(null);
   const [fotoRemovida, setFotoRemovida] = useState(false);
@@ -2603,17 +2745,29 @@ function EditSheet({ tx, avatars, people=[], onClose, onSave }) {
           <ImagePlus size={16} color={C.caramelDeep}/> Anexar foto (recibo, produto…)
         </button>
       )}
-      <TxForm tx={form} avatars={avatars} people={people} onChange={setForm} onCancel={onClose}
+      <TxForm tx={form} avatars={avatars} people={people} customCategories={customCategories} onAddCategory={onAddCategory} onChange={setForm} onCancel={onClose}
         onSave={()=>{if(Number(form.valor)>0)onSave({...form,valor:Number(form.valor)}, foto, fotoRemovida&&!foto);}}
         saveLabel={tx.id?"Salvar alterações":"Salvar"}/>
     </Sheet>
   );
 }
 
-function TxForm({ tx, avatars, people=[], onChange, onCancel, onSave, saveLabel }) {
-  const cats = tx.tipo==="ganho"?CAT_GANHO:CAT_GASTO;
+function TxForm({ tx, avatars, people=[], customCategories=[], onAddCategory, onChange, onCancel, onSave, saveLabel }) {
+  const cats = catsForTipo(tx.tipo, customCategories);
   const s=(k,v)=>onChange({...tx,[k]:v});
   const opcoesPessoa = people.length>1 ? [...people, PESSOA_CASAL] : people;
+  const [novaCatOpen, setNovaCatOpen] = useState(false);
+  const [novaCat, setNovaCat] = useState({ name:"", emoji:"📦" });
+  const [catErr, setCatErr] = useState("");
+  const criarCat = () => {
+    if (!onAddCategory) return;
+    const r = onAddCategory(novaCat.name, novaCat.emoji, tx.tipo);
+    if (!r.ok) { setCatErr(r.message); return; }
+    s("categoria", novaCat.name.trim());
+    setNovaCat({ name:"", emoji:"📦" });
+    setNovaCatOpen(false);
+    setCatErr("");
+  };
   return (
     <>
       <div style={{display:"flex",gap:8,marginBottom:14}}>
@@ -2638,13 +2792,32 @@ function TxForm({ tx, avatars, people=[], onChange, onCancel, onSave, saveLabel 
       <div style={{display:"flex",gap:8,marginTop:10}}>
         <div style={{flex:1}}>
           <Eyebrow style={{marginBottom:4}}>Categoria</Eyebrow>
-          <Select value={tx.categoria} onChange={e=>s("categoria",e.target.value)}>{cats.map(c=><option key={c}>{c}</option>)}</Select>
+          <Select value={tx.categoria} onChange={e=>s("categoria",e.target.value)}>{cats.map(c=><option key={c}>{emojiFor(c,customCategories)} {c}</option>)}</Select>
         </div>
         <div style={{flex:1}}>
           <Eyebrow style={{marginBottom:4}}>Pagamento</Eyebrow>
           <Select value={tx.pagamento} onChange={e=>s("pagamento",e.target.value)}>{PAYMENTS.map(p=><option key={p}>{p}</option>)}</Select>
         </div>
       </div>
+      {onAddCategory && !novaCatOpen && (
+        <button type="button" onClick={()=>{setNovaCatOpen(true);setCatErr("");}} style={{background:"none",border:"none",padding:"6px 0 0",cursor:"pointer",color:C.caramelDeep,fontSize:12,fontWeight:700,fontFamily:F.body,display:"flex",alignItems:"center",gap:4}}>
+          <Plus size={13}/> Não achou a categoria? Criar nova
+        </button>
+      )}
+      {onAddCategory && novaCatOpen && (
+        <div style={{marginTop:8,background:"#FBF7EE",border:`1px solid ${C.border}`,borderRadius:12,padding:10}}>
+          <div style={{fontSize:11.5,color:C.muted,marginBottom:6,fontWeight:700}}>Nova categoria de {tx.tipo==="ganho"?"ganho":"gasto"}</div>
+          <div style={{display:"flex",gap:8}}>
+            <Input value={novaCat.emoji} onChange={e=>setNovaCat(v=>({...v,emoji:e.target.value.slice(0,2)}))} placeholder="📦" style={{width:56,textAlign:"center",fontSize:18}}/>
+            <Input value={novaCat.name} onChange={e=>setNovaCat(v=>({...v,name:e.target.value}))} placeholder="Ex.: Curso" style={{flex:1}} autoFocus/>
+          </div>
+          {catErr&&<div style={{fontSize:11.5,color:C.red,fontWeight:700,marginTop:6}}>{catErr}</div>}
+          <div style={{display:"flex",gap:8,marginTop:8}}>
+            <Btn variant="outline" small onClick={()=>{setNovaCatOpen(false);setCatErr("");}} style={{flex:1}}>Cancelar</Btn>
+            <Btn variant="gold" small onClick={criarCat} disabled={!novaCat.name.trim()} style={{flex:1}}><Check size={13}/> Criar e usar</Btn>
+          </div>
+        </div>
+      )}
       {opcoesPessoa.length>1&&(
       <div style={{marginTop:12}}>
         <Eyebrow style={{marginBottom:6}}>Quem foi</Eyebrow>
