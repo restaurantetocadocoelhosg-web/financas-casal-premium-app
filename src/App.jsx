@@ -910,6 +910,20 @@ export default function App() {
     };
   },[loaded, loadOnlineWorkspace]);
 
+  // Auto-atualiza a lista de membros do workspace: assim que alguém entra por
+  // convite, o nome dela aparece pra quem já estava logado, sem precisar dar F5.
+  useEffect(()=>{
+    if (!SUPABASE_ENABLED || !supabase || !onlineWorkspace?.id) return undefined;
+    const wsId = onlineWorkspace.id;
+    const tick = () => { if (document.visibilityState === "visible") loadOnlineMembers(wsId); };
+    const interval = setInterval(tick, 20000);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  },[onlineWorkspace?.id, loadOnlineMembers]);
+
   const currentUser = useMemo(
     ()=>auth.users.find(u=>u.id===session?.userId) || null,
     [auth.users, session]
