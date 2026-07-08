@@ -54,9 +54,18 @@ const F = {
 const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
-const PEOPLE = ["Rubens", "Nayara"];
+// v-multi-tenant: nomes NAO sao mais fixos (cada workspace tem os seus, vindos de finance_members).
+// Cor por pessoa: hash estavel do nome -> mesma cor sempre, sem precisar saber a lista toda.
 const PESSOA_CASAL = "Casal";
-const PERSON_COLOR = { Rubens: C.caramelDeep, Nayara: C.plum, [PESSOA_CASAL]: C.green };
+const PERSON_PALETTE = [C.caramelDeep, C.plum, C.blue, C.gold, "#B5533C", "#3D8361", "#8155A6"];
+function colorForPerson(name) {
+  if (name === PESSOA_CASAL) return C.green;
+  const clean = String(name || "").trim();
+  if (!clean) return C.caramel;
+  let hash = 0;
+  for (let i = 0; i < clean.length; i++) hash = (hash * 31 + clean.charCodeAt(i)) >>> 0;
+  return PERSON_PALETTE[hash % PERSON_PALETTE.length];
+}
 const PAYMENTS = ["Pix", "Dinheiro", "Crédito", "Débito", "Boleto", "Transferência", "Outro"];
 const CAT_GASTO = ["Mercado","Padaria","Açougue","Farmácia","Restaurante","Delivery","Combustível","Casa","Energia","Água","Internet","Streaming","Assinaturas","Carro","Seguro","Lazer","Roupas","Pets","Presentes","Saúde","Viagem","Impostos","Outros"];
 const CAT_GANHO = ["Salário","Vendas","Freelance","Investimentos","Reembolso","Outros ganhos"];
@@ -512,13 +521,13 @@ function detectPayment(text) {
   return "Pix";
 }
 
-function interpretFinancialText(text, defaultPerson) {
+function interpretFinancialText(text, defaultPerson, people=[]) {
   const clean = normalize(text);
   const valor = detectMoney(text);
   if (!valor) throw new Error("valor");
   const tipo = /(recebi|ganhei|entrou|salario|venda|freela|reembolso)/.test(clean) ? "ganho" : "gasto";
-  const ehCompartilhado = /(juntos|junto|os dois|nos dois|em casal|\bcasal\b|nos gastamos|gastamos)/.test(clean);
-  const pessoa = ehCompartilhado ? PESSOA_CASAL : (PEOPLE.find(p=>clean.includes(normalize(p))) || defaultPerson);
+  const ehCompartilhado = people.length>1 && /(juntos|junto|os dois|nos dois|em casal|\bcasal\b|nos gastamos|gastamos)/.test(clean);
+  const pessoa = ehCompartilhado ? PESSOA_CASAL : (people.find(p=>clean.includes(normalize(p))) || defaultPerson);
   const categoria = detectCategory(text, tipo);
   const pagamento = detectPayment(text);
   const necessaryFalse = ["Delivery","Restaurante","Streaming","Lazer","Roupas","Presentes","Viagem"].includes(categoria) || /(besteira|supérfluo|superfluo|luxo)/.test(clean);
@@ -535,11 +544,11 @@ function interpretFinancialText(text, defaultPerson) {
   };
 }
 
-function answerFinanceQuestion(question, transactions, fixedExpenses=[], goals=[]) {
+function answerFinanceQuestion(question, transactions, fixedExpenses=[], goals=[], people=[]) {
   const q = normalize(question);
   const now = new Date();
   const month = { y: now.getFullYear(), m: now.getMonth() };
-  const person = /(juntos|junto|os dois|nos dois|em casal|\bcasal\b)/.test(q) ? PESSOA_CASAL : (PEOPLE.find(p=>q.includes(normalize(p))) || "Todos");
+  const person = (people.length>1 && /(juntos|junto|os dois|nos dois|em casal|\bcasal\b)/.test(q)) ? PESSOA_CASAL : (people.find(p=>q.includes(normalize(p))) || "Todos");
   const report = buildFinancialReport(transactions, fixedExpenses, goals, month, person);
   const category = [...CAT_GASTO, ...CAT_GANHO].find(c=>q.includes(normalize(c)));
   if (category) {
@@ -635,7 +644,7 @@ const Btn = ({children, variant="dark", onClick, disabled, style, small}) => {
 /* ── Avatar com foto ── */
 const Avatar = ({ name, avatars, size=34, ring=true }) => {
   const photo = avatars?.[name];
-  const color = PERSON_COLOR[name] || C.caramel;
+  const color = colorForPerson(name);
   return photo ? (
     <img src={photo} alt={name} style={{width:size,height:size,borderRadius:"50%",objectFit:"cover",border:ring?`2px solid ${color}`:"none",flexShrink:0,display:"block"}}/>
   ) : (
@@ -1157,7 +1166,12 @@ export default function App() {
     <AuthGate auth={auth} onCreateFirst={createFirstUser} onLogin={signIn}/>
   );
 
-  const newManualTx = ()=>setEditing({tipo:"gasto",valor:"",categoria:"Mercado",descricao:"",pagamento:"Pix",pessoa:person==="Todos"?PEOPLE[0]:person,data:todayISO(),necessario:true});
+  // Nomes reais desta area (workspace) — nada de Rubens/Nayara fixos, cada conta tem os seus.
+  const people = onlineMembers.length
+    ? onlineMembers.map(m=>(m.display_name||"").trim()).filter(Boolean)
+    : (onlineUser ? [onlineUser.user_metadata?.display_name || onlineUser.email?.split("@")[0] || "Você"] : ["Você"]);
+
+  const newManualTx = ()=>setEditing({tipo:"gasto",valor:"",categoria:"Mercado",descricao:"",pagamento:"Pix",pessoa:person==="Todos"?people[0]:person,data:todayISO(),necessario:true});
 
   return (
     <div style={{minHeight:"100vh",background:C.bg,color:C.ink,fontFamily:F.body,paddingBottom:104}}>
@@ -1178,8 +1192,8 @@ export default function App() {
             </button>
             <button onClick={()=>setProfileOpen(true)} style={{background:"none",border:"none",padding:0,cursor:"pointer",display:"flex",marginLeft:2}}>
               <div style={{display:"flex"}}>
-                <Avatar name={PEOPLE[0]} avatars={data.avatars} size={36}/>
-                <div style={{marginLeft:-12}}><Avatar name={PEOPLE[1]} avatars={data.avatars} size={36}/></div>
+                <Avatar name={people[0]} avatars={data.avatars} size={36}/>
+                {people[1]&&<div style={{marginLeft:-12}}><Avatar name={people[1]} avatars={data.avatars} size={36}/></div>}
               </div>
             </button>
             <button onClick={logout} title={`Sair de ${effectiveUser?.name || "usuário"}`} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:10,cursor:"pointer",display:"flex",boxShadow:C.shadowSm}}>
@@ -1190,7 +1204,7 @@ export default function App() {
 
         {/* ── FILTRO PESSOA (chips com avatar) ── */}
         <div style={{display:"flex",gap:8,marginBottom:16}}>
-          {["Todos",...PEOPLE,PESSOA_CASAL].map(p=>(
+          {["Todos",...people,...(people.length>1?[PESSOA_CASAL]:[])].map(p=>(
             <button key={p} onClick={()=>setPerson(p)} style={{display:"flex",alignItems:"center",gap:7,padding:p==="Todos"?"8px 16px":"5px 14px 5px 6px",borderRadius:99,border:`1.5px solid ${person===p?C.ink:C.border}`,background:person===p?C.ink:C.surface,color:person===p?"#F6F1E7":C.inkSoft,fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:F.body}}>
               {p!=="Todos"&&<Avatar name={p} avatars={data.avatars} size={26} ring={false}/>}
               {p}
@@ -1205,10 +1219,10 @@ export default function App() {
           <button onClick={()=>setMonth(m=>m.m===11?{y:m.y+1,m:0}:{y:m.y,m:m.m+1})} style={{background:"none",border:"none",padding:8,cursor:"pointer",display:"flex"}}><ChevronRight size={18} color={C.muted}/></button>
         </div>
 
-        {tab==="home"    && <Dashboard tx={txMonth} allTx={data.transactions} month={month} fixed={data.fixedExpenses} avatars={data.avatars} onNewAI={()=>setAiOpen(true)} onNewNota={()=>setNotaOpen(true)} onNewManual={newManualTx} onOpenReports={()=>setReportOpen(true)} onAddFixed={addFixed} onDeleteFixed={deleteFixed}/>}
+        {tab==="home"    && <Dashboard tx={txMonth} allTx={data.transactions} month={month} fixed={data.fixedExpenses} avatars={data.avatars} people={people} onNewAI={()=>setAiOpen(true)} onNewNota={()=>setNotaOpen(true)} onNewManual={newManualTx} onOpenReports={()=>setReportOpen(true)} onAddFixed={addFixed} onDeleteFixed={deleteFixed}/>}
         {tab==="extrato" && <Extrato tx={txMonth} avatars={data.avatars} onDelete={deleteTx} onEdit={setEditing} onViewPhoto={setPhotoView}/>}
         {tab==="metas"   && <Metas goals={data.goals} onAdd={addGoal} onUpdate={updateGoal} onDelete={deleteGoal}/>}
-        {tab==="chat"    && <ChatIA transactions={data.transactions} fixedExpenses={data.fixedExpenses} goals={data.goals} avatars={data.avatars}/>}
+        {tab==="chat"    && <ChatIA transactions={data.transactions} fixedExpenses={data.fixedExpenses} goals={data.goals} avatars={data.avatars} people={people}/>}
         {tab==="admin"   && effectiveUser?.role==="admin" && (
           SUPABASE_ENABLED
             ? <OnlineAdminPanel
@@ -1241,11 +1255,11 @@ export default function App() {
       </div>
 
       {/* ── MODAIS ── */}
-      {aiOpen     && <AISheet defaultPerson={person==="Todos"?PEOPLE[0]:person} avatars={data.avatars} onClose={()=>setAiOpen(false)} onConfirm={(tx)=>{addTx(tx);setAiOpen(false);}} onOpenNota={()=>{setAiOpen(false);setNotaOpen(true);}}/>}
-      {notaOpen   && <NotaSheet defaultPerson={person==="Todos"?PEOPLE[0]:person} avatars={data.avatars} onClose={()=>setNotaOpen(false)} onConfirm={(tx,foto)=>{addTx(tx,foto);setNotaOpen(false);}}/>}
-      {editing    && <EditSheet tx={editing} avatars={data.avatars} onClose={()=>setEditing(null)} onSave={(tx,foto,fotoRemovida)=>{tx.id?updateTx(tx,foto,fotoRemovida):addTx(tx,foto);setEditing(null);}}/>}
+      {aiOpen     && <AISheet defaultPerson={person==="Todos"?people[0]:person} people={people} avatars={data.avatars} onClose={()=>setAiOpen(false)} onConfirm={(tx)=>{addTx(tx);setAiOpen(false);}} onOpenNota={()=>{setAiOpen(false);setNotaOpen(true);}}/>}
+      {notaOpen   && <NotaSheet defaultPerson={person==="Todos"?people[0]:person} people={people} avatars={data.avatars} onClose={()=>setNotaOpen(false)} onConfirm={(tx,foto)=>{addTx(tx,foto);setNotaOpen(false);}}/>}
+      {editing    && <EditSheet tx={editing} avatars={data.avatars} people={people} onClose={()=>setEditing(null)} onSave={(tx,foto,fotoRemovida)=>{tx.id?updateTx(tx,foto,fotoRemovida):addTx(tx,foto);setEditing(null);}}/>}
       {searchOpen && <SearchModal transactions={data.transactions} avatars={data.avatars} onClose={()=>setSearchOpen(false)} onEdit={t=>{setSearchOpen(false);setEditing(t);}} onDelete={deleteTx} onViewPhoto={setPhotoView}/>}
-      {profileOpen&& <ProfileSheet avatars={data.avatars} onSetAvatar={setAvatar} onClose={()=>setProfileOpen(false)}/>}
+      {profileOpen&& <ProfileSheet avatars={data.avatars} people={people} onSetAvatar={setAvatar} onClose={()=>setProfileOpen(false)}/>}
       {reportOpen && <ReportSheet data={data} month={month} person={person} onClose={()=>setReportOpen(false)} onImport={importData}/>}
       {photoView  && <PhotoViewer txId={photoView} onClose={()=>setPhotoView(null)}/>}
 
@@ -1263,7 +1277,7 @@ export default function App() {
 ═══════════════════════════════════════════════ */
 function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, syncStatus }) {
   const [mode, setMode] = useState("login");
-  const [form, setForm] = useState({ name:"Rubens", email:"", password:"", confirm:"" });
+  const [form, setForm] = useState({ name:"", email:"", password:"", confirm:"" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -1370,7 +1384,7 @@ function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, syncSta
           {mode==="create"&&(
             <>
               <Eyebrow style={{marginBottom:5}}>Nome</Eyebrow>
-              <Input value={form.name} onChange={e=>s("name",e.target.value)} placeholder="Rubens" autoComplete="name" style={{marginBottom:10}}/>
+              <Input value={form.name} onChange={e=>s("name",e.target.value)} placeholder="Seu nome" autoComplete="name" style={{marginBottom:10}}/>
             </>
           )}
           <Eyebrow style={{marginBottom:5}}>Email</Eyebrow>
@@ -1454,7 +1468,7 @@ function OnlineWorkspaceGate({ user, onCreateWorkspace, onAcceptInvite, onLogout
 
         <form onSubmit={submit}>
           <Eyebrow style={{marginBottom:5}}>Seu nome</Eyebrow>
-          <Input value={form.displayName} onChange={e=>s("displayName",e.target.value)} placeholder="Rubens" autoComplete="name" style={{marginBottom:10}}/>
+          <Input value={form.displayName} onChange={e=>s("displayName",e.target.value)} placeholder="Seu nome" autoComplete="name" style={{marginBottom:10}}/>
           {mode==="join"&&(
             <>
               <Eyebrow style={{marginBottom:5}}>Código</Eyebrow>
@@ -1804,7 +1818,7 @@ function AdminPanel({ auth, currentUser, data, onCreateUser, onDeleteUser, onLog
 /* ═══════════════════════════════════════════════
    DASHBOARD
 ═══════════════════════════════════════════════ */
-function Dashboard({ tx, allTx, month, fixed, avatars, onNewAI, onNewNota, onNewManual, onOpenReports, onAddFixed, onDeleteFixed }) {
+function Dashboard({ tx, allTx, month, fixed, avatars, people=[], onNewAI, onNewNota, onNewManual, onOpenReports, onAddFixed, onDeleteFixed }) {
   const [calOpen, setCalOpen] = useState(false);
   const [fixOpen, setFixOpen] = useState(false);
 
@@ -1830,7 +1844,7 @@ function Dashboard({ tx, allTx, month, fixed, avatars, onNewAI, onNewNota, onNew
   }));
   const gastoCasal = gastos.filter(t=>t.pessoa===PESSOA_CASAL).reduce((s,t)=>s+Number(t.valor),0);
   const byPerson = [
-    ...PEOPLE.map(p=>({name:p,gasto:gastos.filter(t=>t.pessoa===p).reduce((s,t)=>s+Number(t.valor),0)})),
+    ...people.map(p=>({name:p,gasto:gastos.filter(t=>t.pessoa===p).reduce((s,t)=>s+Number(t.valor),0)})),
     ...(gastoCasal>0 ? [{name:PESSOA_CASAL,gasto:gastoCasal}] : []),
   ];
   const topCat = byCat[0];
@@ -1849,8 +1863,8 @@ function Dashboard({ tx, allTx, month, fixed, avatars, onNewAI, onNewNota, onNew
             </div>
           </div>
           <div style={{display:"flex"}}>
-            <Avatar name={PEOPLE[0]} avatars={avatars} size={34}/>
-            <div style={{marginLeft:-10}}><Avatar name={PEOPLE[1]} avatars={avatars} size={34}/></div>
+            <Avatar name={people[0]} avatars={avatars} size={34}/>
+            {people[1]&&<div style={{marginLeft:-10}}><Avatar name={people[1]} avatars={avatars} size={34}/></div>}
           </div>
         </div>
         <div style={{display:"flex",gap:0,marginTop:18,borderTop:"1px solid rgba(255,255,255,0.20)",paddingTop:14}}>
@@ -1974,10 +1988,10 @@ function Dashboard({ tx, allTx, month, fixed, avatars, onNewAI, onNewNota, onNew
                 <div style={{flex:1}}>
                   <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:4}}>
                     <span style={{fontWeight:700}}>{p.name}</span>
-                    <span style={{fontFamily:F.display,fontWeight:600,color:PERSON_COLOR[p.name]}}>{fmt(p.gasto)}</span>
+                    <span style={{fontFamily:F.display,fontWeight:600,color:colorForPerson(p.name)}}>{fmt(p.gasto)}</span>
                   </div>
                   <div style={{background:C.bgAlt,borderRadius:99,height:7,overflow:"hidden"}}>
-                    <div style={{width:`${totalG>0?Math.min(p.gasto/totalG*100,100):0}%`,height:"100%",background:PERSON_COLOR[p.name],borderRadius:99,transition:"width .6s ease"}}/>
+                    <div style={{width:`${totalG>0?Math.min(p.gasto/totalG*100,100):0}%`,height:"100%",background:colorForPerson(p.name),borderRadius:99,transition:"width .6s ease"}}/>
                   </div>
                 </div>
               </div>
@@ -2268,7 +2282,7 @@ function Metas({ goals, onAdd, onUpdate, onDelete }) {
 /* ═══════════════════════════════════════════════
    AGENTE POR VOZ / TEXTO
 ═══════════════════════════════════════════════ */
-function AISheet({ onClose, onConfirm, defaultPerson, avatars, onOpenNota }) {
+function AISheet({ onClose, onConfirm, defaultPerson, people=[], avatars, onOpenNota }) {
   const [text, setText] = useState("");
   const [listening, setListening] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -2292,7 +2306,7 @@ function AISheet({ onClose, onConfirm, defaultPerson, avatars, onOpenNota }) {
     if(!text.trim())return;
     setLoading(true); setError("");
     try{
-      const tx = interpretFinancialText(text, defaultPerson);
+      const tx = interpretFinancialText(text, defaultPerson, people);
       setPending(tx);
     }catch{ setError('Não consegui interpretar. Ex.: "Gastei 50 reais no mercado no Pix".'); }
     setLoading(false);
@@ -2321,7 +2335,7 @@ function AISheet({ onClose, onConfirm, defaultPerson, avatars, onOpenNota }) {
           </button>
         </>
       ):(
-        <TxForm tx={pending} avatars={avatars} onChange={setPending} onCancel={()=>setPending(null)} onSave={()=>onConfirm({...pending,valor:Number(pending.valor)})} saveLabel="Confirmar e salvar"/>
+        <TxForm tx={pending} avatars={avatars} people={people} onChange={setPending} onCancel={()=>setPending(null)} onSave={()=>onConfirm({...pending,valor:Number(pending.valor)})} saveLabel="Confirmar e salvar"/>
       )}
     </Sheet>
   );
@@ -2330,7 +2344,7 @@ function AISheet({ onClose, onConfirm, defaultPerson, avatars, onOpenNota }) {
 /* ═══════════════════════════════════════════════
    NOTA FISCAL / RECIBO COM FOTO
 ═══════════════════════════════════════════════ */
-function NotaSheet({ onClose, onConfirm, defaultPerson, avatars }) {
+function NotaSheet({ onClose, onConfirm, defaultPerson, people=[], avatars }) {
   const [foto, setFoto] = useState(null);
   const [pending, setPending] = useState(null);
   const [error, setError] = useState("");
@@ -2390,7 +2404,7 @@ function NotaSheet({ onClose, onConfirm, defaultPerson, avatars }) {
         </>
       ):(
         <>
-          <TxForm tx={pending} avatars={avatars} onChange={setPending} onCancel={()=>setPending(null)} onSave={()=>onConfirm({...pending,valor:Number(pending.valor)}, foto)} saveLabel="Salvar com a foto"/>
+          <TxForm tx={pending} avatars={avatars} people={people} onChange={setPending} onCancel={()=>setPending(null)} onSave={()=>onConfirm({...pending,valor:Number(pending.valor)}, foto)} saveLabel="Salvar com a foto"/>
         </>
       )}
     </Sheet>
@@ -2400,7 +2414,7 @@ function NotaSheet({ onClose, onConfirm, defaultPerson, avatars }) {
 /* ═══════════════════════════════════════════════
    FORM DE LANÇAMENTO (+ anexar foto)
 ═══════════════════════════════════════════════ */
-function EditSheet({ tx, avatars, onClose, onSave }) {
+function EditSheet({ tx, avatars, people=[], onClose, onSave }) {
   const [form, setForm] = useState({...tx});
   const [foto, setFoto] = useState(null);
   const [fotoRemovida, setFotoRemovida] = useState(false);
@@ -2430,16 +2444,17 @@ function EditSheet({ tx, avatars, onClose, onSave }) {
           <ImagePlus size={16} color={C.caramelDeep}/> Anexar foto (recibo, produto…)
         </button>
       )}
-      <TxForm tx={form} avatars={avatars} onChange={setForm} onCancel={onClose}
+      <TxForm tx={form} avatars={avatars} people={people} onChange={setForm} onCancel={onClose}
         onSave={()=>{if(Number(form.valor)>0)onSave({...form,valor:Number(form.valor)}, foto, fotoRemovida&&!foto);}}
         saveLabel={tx.id?"Salvar alterações":"Salvar"}/>
     </Sheet>
   );
 }
 
-function TxForm({ tx, avatars, onChange, onCancel, onSave, saveLabel }) {
+function TxForm({ tx, avatars, people=[], onChange, onCancel, onSave, saveLabel }) {
   const cats = tx.tipo==="ganho"?CAT_GANHO:CAT_GASTO;
   const s=(k,v)=>onChange({...tx,[k]:v});
+  const opcoesPessoa = people.length>1 ? [...people, PESSOA_CASAL] : people;
   return (
     <>
       <div style={{display:"flex",gap:8,marginBottom:14}}>
@@ -2471,18 +2486,20 @@ function TxForm({ tx, avatars, onChange, onCancel, onSave, saveLabel }) {
           <Select value={tx.pagamento} onChange={e=>s("pagamento",e.target.value)}>{PAYMENTS.map(p=><option key={p}>{p}</option>)}</Select>
         </div>
       </div>
+      {opcoesPessoa.length>1&&(
       <div style={{marginTop:12}}>
         <Eyebrow style={{marginBottom:6}}>Quem foi</Eyebrow>
-        <div style={{display:"flex",gap:8}}>
-          {[...PEOPLE, PESSOA_CASAL].map(p=>(
-            <button key={p} onClick={()=>s("pessoa",p)} style={{flex:1,display:"flex",alignItems:"center",gap:8,padding:"8px 12px",borderRadius:14,border:`1.5px solid ${tx.pessoa===p?PERSON_COLOR[p]:C.border}`,background:tx.pessoa===p?(p===PEOPLE[0]?C.goldPale:p===PEOPLE[1]?C.plumPale:C.greenPale):"#FBF7EE",cursor:"pointer",fontFamily:F.body}}>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          {opcoesPessoa.map(p=>(
+            <button key={p} onClick={()=>s("pessoa",p)} style={{flex:"1 1 auto",display:"flex",alignItems:"center",gap:8,padding:"8px 12px",borderRadius:14,border:`1.5px solid ${tx.pessoa===p?colorForPerson(p):C.border}`,background:tx.pessoa===p?`${colorForPerson(p)}22`:"#FBF7EE",cursor:"pointer",fontFamily:F.body}}>
               <Avatar name={p} avatars={avatars} size={28} ring={false}/>
-              <span style={{fontWeight:700,fontSize:13,color:tx.pessoa===p?PERSON_COLOR[p]:C.muted}}>{p}</span>
+              <span style={{fontWeight:700,fontSize:13,color:tx.pessoa===p?colorForPerson(p):C.muted}}>{p}</span>
             </button>
           ))}
         </div>
-        {tx.pessoa===PESSOA_CASAL && <div style={{marginTop:6,fontSize:11.5,color:C.muted,fontFamily:F.body}}>Gasto do casal: entra nos relatórios como uma categoria própria, sem contar pra nenhum dos dois individualmente.</div>}
+        {tx.pessoa===PESSOA_CASAL && <div style={{marginTop:6,fontSize:11.5,color:C.muted,fontFamily:F.body}}>Gasto compartilhado: entra nos relatórios como uma categoria própria, sem contar pra nenhuma pessoa individualmente.</div>}
       </div>
+      )}
       <div style={{marginTop:10}}>
         <Eyebrow style={{marginBottom:4}}>Classificação</Eyebrow>
         <Select value={tx.necessario?"sim":"nao"} onChange={e=>s("necessario",e.target.value==="sim")}>
@@ -2501,8 +2518,9 @@ function TxForm({ tx, avatars, onChange, onCancel, onSave, saveLabel }) {
 /* ═══════════════════════════════════════════════
    AGENTE FINANCEIRO
 ═══════════════════════════════════════════════ */
-function ChatIA({ transactions, fixedExpenses, goals }) {
-  const [msgs, setMsgs] = useState([{role:"ai",text:"Olá! Sou o agente financeiro de vocês.\n\nPergunte, por exemplo:\n• Quanto gastamos em mercado esse mês?\n• Faça um resumo do mês\n• Onde podemos economizar?\n• Quanto a Nayara gastou com delivery?\n• Como estão as metas?"}]);
+function ChatIA({ transactions, fixedExpenses, goals, people=[] }) {
+  const exemploNome = people[1] || people[0] || "alguém";
+  const [msgs, setMsgs] = useState([{role:"ai",text:`Olá! Sou o agente financeiro.\n\nPergunte, por exemplo:\n• Quanto gastamos em mercado esse mês?\n• Faça um resumo do mês\n• Onde podemos economizar?\n• Quanto ${exemploNome} gastou com delivery?\n• Como estão as metas?`}]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const endRef = useRef(null);
@@ -2513,7 +2531,7 @@ function ChatIA({ transactions, fixedExpenses, goals }) {
     if(!q||loading)return;
     setMsgs(m=>[...m,{role:"user",text:q}]); setInput(""); setLoading(true);
     try{
-      const r = answerFinanceQuestion(q, transactions, fixedExpenses, goals);
+      const r = answerFinanceQuestion(q, transactions, fixedExpenses, goals, people);
       setMsgs(m=>[...m,{role:"ai",text:r||"Não consegui responder agora."}]);
     }catch{ setMsgs(m=>[...m,{role:"ai",text:"Não consegui analisar essa pergunta. Tente pedir resumo, economia, meta, contas fixas ou uma categoria específica."}]); }
     setLoading(false);
@@ -2660,7 +2678,7 @@ function SearchModal({ transactions, avatars, onClose, onEdit, onDelete, onViewP
     <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(42,32,24,0.35)",backdropFilter:"blur(5px)",zIndex:60,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"14px 16px"}}>
       <div className="su" onClick={e=>e.stopPropagation()} style={{width:"100%",maxWidth:480,background:C.surface,borderRadius:24,border:`1px solid ${C.border}`,boxShadow:C.shadow,padding:16,maxHeight:"85vh",overflowY:"auto"}}>
         <div style={{display:"flex",gap:8,marginBottom:12}}>
-          <Input autoFocus value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar: mercado, Pix, Nayara, 2026-06…" style={{flex:1}}/>
+          <Input autoFocus value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar: mercado, Pix, 2026-06…" style={{flex:1}}/>
           <button onClick={onClose} style={{background:C.bgAlt,border:`1px solid ${C.border}`,borderRadius:12,padding:"0 13px",cursor:"pointer",color:C.muted,display:"flex",alignItems:"center"}}><X size={16}/></button>
         </div>
         {q&&results.length===0&&<div style={{textAlign:"center",color:C.muted,padding:24,fontSize:13}}>Nenhum resultado.</div>}
@@ -2673,22 +2691,22 @@ function SearchModal({ transactions, avatars, onClose, onEdit, onDelete, onViewP
 /* ═══════════════════════════════════════════════
    PERFIS — FOTOS DO CASAL
 ═══════════════════════════════════════════════ */
-function ProfileSheet({ avatars, onSetAvatar, onClose }) {
-  const pessoas = [...PEOPLE, PESSOA_CASAL];
+function ProfileSheet({ avatars, people=[], onSetAvatar, onClose }) {
+  const pessoas = people.length>1 ? [...people, PESSOA_CASAL] : people;
   const refs = Object.fromEntries(pessoas.map(p=>[p,useRef(null)]));
   return (
-    <Sheet onClose={onClose} title="Fotos do casal">
+    <Sheet onClose={onClose} title="Fotos">
       <div style={{fontSize:13,color:C.muted,marginBottom:16,lineHeight:1.6}}>
         As fotos identificam quem fez cada lançamento em todo o aplicativo — no extrato, nos gráficos e nos gastos por pessoa.
       </div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+      <div style={{display:"grid",gridTemplateColumns:pessoas.length>=3?"1fr 1fr 1fr":"1fr 1fr",gap:12}}>
         {pessoas.map(p=>(
           <div key={p} style={{textAlign:"center"}}>
             <input ref={refs[p]} type="file" accept="image/*" onChange={e=>{const f=e.target.files?.[0];if(f)onSetAvatar(p,f);}} style={{display:"none"}}/>
             <button onClick={()=>refs[p].current?.click()} style={{background:"none",border:"none",cursor:"pointer",padding:0}}>
               <div style={{position:"relative",display:"inline-block"}}>
                 <Avatar name={p} avatars={avatars} size={96}/>
-                <div style={{position:"absolute",bottom:0,right:0,width:30,height:30,borderRadius:99,background:PERSON_COLOR[p],display:"flex",alignItems:"center",justifyContent:"center",border:`2.5px solid ${C.surface}`}}>
+                <div style={{position:"absolute",bottom:0,right:0,width:30,height:30,borderRadius:99,background:colorForPerson(p),display:"flex",alignItems:"center",justifyContent:"center",border:`2.5px solid ${C.surface}`}}>
                   <Camera size={14} color="#fff"/>
                 </div>
               </div>
