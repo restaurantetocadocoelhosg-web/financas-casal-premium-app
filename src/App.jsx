@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { supabase, SUPABASE_ENABLED } from "./supabaseClient";
 import {
   PieChart, Pie, Cell, ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, Tooltip
@@ -9,7 +10,8 @@ import {
   Target, Calendar, Search, Camera, ChevronDown, ReceiptText,
   RotateCcw, ImagePlus, UserRound, Eye, Download, FileSpreadsheet,
   FileText, Upload, BrainCircuit, ShieldCheck, BadgeDollarSign,
-  TrendingDown, Database, Printer, LockKeyhole, LogOut, UserPlus, Users
+  TrendingDown, Database, Printer, LockKeyhole, LogOut, UserPlus, Users,
+  Cloud, Copy, KeyRound
 } from "lucide-react";
 
 /* ═══════════════════════════════════════════════
@@ -309,6 +311,23 @@ function compressImage(file, maxDim = 900, quality = 0.72) {
 
 /* ── storage ── */
 const DEFAULT_DATA = { transactions:[], goals:[], fixedExpenses:[], avatars:{} };
+const sanitizeData = (input) => ({
+  ...DEFAULT_DATA,
+  ...input,
+  transactions: Array.isArray(input?.transactions) ? input.transactions : [],
+  goals: Array.isArray(input?.goals) ? input.goals : [],
+  fixedExpenses: Array.isArray(input?.fixedExpenses) ? input.fixedExpenses : [],
+  avatars: input?.avatars && typeof input.avatars === "object" ? input.avatars : {},
+});
+const hasFinancialData = (input) => {
+  const d = sanitizeData(input);
+  return Boolean(
+    d.transactions.length ||
+    d.goals.length ||
+    d.fixedExpenses.length ||
+    Object.keys(d.avatars).length
+  );
+};
 const browserStorage = {
   async get(key) {
     if (typeof window === "undefined") return null;
@@ -401,12 +420,12 @@ const clearSession = () => browserStorage.delete(SESSION_KEY).catch(()=>{});
 async function loadAll() {
   try {
     const r = await browserStorage.get(STORAGE_KEY);
-    if (r?.value) return { ...DEFAULT_DATA, ...JSON.parse(r.value) };
+    if (r?.value) return sanitizeData(JSON.parse(r.value));
   } catch {}
   // migração da versão anterior
   try {
     const old = await browserStorage.get("financas-casal-v2");
-    if (old?.value) return { ...DEFAULT_DATA, ...JSON.parse(old.value) };
+    if (old?.value) return sanitizeData(JSON.parse(old.value));
   } catch {}
   return DEFAULT_DATA;
 }
@@ -649,6 +668,17 @@ function GlobalStyles() {
   );
 }
 
+function LoadingScreen({ label="Finanças do Casal", status }) {
+  return (
+    <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:14,padding:20,textAlign:"center"}}>
+      <GlobalStyles/>
+      <div style={{fontFamily:F.display,fontSize:24,fontWeight:600,color:C.caramelDeep,fontStyle:"italic"}}>{label}</div>
+      <Loader2 size={22} color={C.gold} style={{animation:"spin 1s linear infinite"}}/>
+      {status&&<div style={{fontSize:12.5,color:C.muted,maxWidth:320,lineHeight:1.45}}>{status}</div>}
+    </div>
+  );
+}
+
 /* ═══════════════════════════════════════════════
    APP
 ═══════════════════════════════════════════════ */
@@ -668,15 +698,150 @@ export default function App() {
   const [reportOpen, setReportOpen] = useState(false);
   const [photoView, setPhotoView] = useState(null);
   const [toast, setToast] = useState(null);
+  const [onlineUser, setOnlineUser] = useState(null);
+  const [onlineWorkspace, setOnlineWorkspace] = useState(null);
+  const [onlineMember, setOnlineMember] = useState(null);
+  const [onlineMembers, setOnlineMembers] = useState([]);
+  const [onlineNeedsSetup, setOnlineNeedsSetup] = useState(false);
+  const [onlineLoading, setOnlineLoading] = useState(SUPABASE_ENABLED);
+  const [syncStatus, setSyncStatus] = useState(SUPABASE_ENABLED ? "Conectando ao Supabase..." : "Modo local");
+  const [lastSyncedAt, setLastSyncedAt] = useState(null);
+  const localSeedRef = useRef(DEFAULT_DATA);
 
   const showToast = useCallback((msg)=>{ setToast(msg); setTimeout(()=>setToast(null),2600); },[]);
-  const persist = useCallback((next)=>{ setData(next); persistAll(next); },[]);
   const persistAuthState = useCallback((next)=>{ setAuth(next); persistAuth(next); },[]);
+
+  const saveRemoteState = useCallback(async (workspaceId, userId, next) => {
+    if (!SUPABASE_ENABLED || !supabase || !workspaceId || !userId) return { ok:false };
+    const clean = sanitizeData(next);
+    const { error } = await supabase
+      .from("finance_app_state")
+      .upsert({
+        workspace_id: workspaceId,
+        data: clean,
+        updated_by: userId,
+        updated_at: new Date().toISOString(),
+      }, { onConflict:"workspace_id" });
+    return error ? { ok:false, message:error.message } : { ok:true };
+  },[]);
+
+  const loadOnlineMembers = useCallback(async (workspaceId) => {
+    if (!SUPABASE_ENABLED || !supabase || !workspaceId) return;
+    const { data: rows, error } = await supabase
+      .from("finance_members")
+      .select("id,user_id,display_name,role,created_at")
+      .eq("workspace_id", workspaceId)
+      .order("created_at", { ascending:true });
+    if (error) {
+      setSyncStatus(`Membros: ${error.message}`);
+      return;
+    }
+    setOnlineMembers(rows || []);
+  },[]);
+
+  const loadOnlineWorkspace = useCallback(async (user, localSeed = DEFAULT_DATA) => {
+    if (!SUPABASE_ENABLED || !supabase || !user) {
+      setOnlineLoading(false);
+      return;
+    }
+
+    setOnlineLoading(true);
+    setSyncStatus("Sincronizando...");
+
+    const { data: member, error: memberError } = await supabase
+      .from("finance_members")
+      .select("workspace_id,role,display_name,created_at")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending:true })
+      .limit(1)
+      .maybeSingle();
+
+    if (memberError) {
+      setSyncStatus(`Erro no acesso: ${memberError.message}`);
+      setOnlineLoading(false);
+      return;
+    }
+
+    if (!member) {
+      setOnlineWorkspace(null);
+      setOnlineMember(null);
+      setOnlineMembers([]);
+      setOnlineNeedsSetup(true);
+      setSyncStatus("Crie o espaço do casal ou entre por convite.");
+      setOnlineLoading(false);
+      return;
+    }
+
+    const { data: workspace, error: workspaceError } = await supabase
+      .from("finance_workspaces")
+      .select("id,name,created_at")
+      .eq("id", member.workspace_id)
+      .single();
+
+    if (workspaceError) {
+      setSyncStatus(`Workspace: ${workspaceError.message}`);
+      setOnlineLoading(false);
+      return;
+    }
+
+    setOnlineNeedsSetup(false);
+    setOnlineMember(member);
+    setOnlineWorkspace(workspace);
+    await loadOnlineMembers(member.workspace_id);
+
+    const { data: stateRow, error: stateError } = await supabase
+      .from("finance_app_state")
+      .select("data,updated_at")
+      .eq("workspace_id", member.workspace_id)
+      .maybeSingle();
+
+    if (stateError) {
+      setSyncStatus(`Dados: ${stateError.message}`);
+      setOnlineLoading(false);
+      return;
+    }
+
+    const remoteData = sanitizeData(stateRow?.data);
+    const localData = sanitizeData(localSeed);
+    const shouldUploadLocal = (!stateRow || !hasFinancialData(remoteData)) && hasFinancialData(localData);
+    const nextData = shouldUploadLocal ? localData : remoteData;
+
+    setData(nextData);
+    persistAll(nextData);
+
+    if (shouldUploadLocal) {
+      const uploaded = await saveRemoteState(member.workspace_id, user.id, nextData);
+      setSyncStatus(uploaded.ok ? "Dados deste aparelho enviados ao Supabase." : `Entrou, mas não subiu o backup: ${uploaded.message}`);
+    } else {
+      setSyncStatus(`Sincronizado${stateRow?.updated_at ? ` em ${new Date(stateRow.updated_at).toLocaleString("pt-BR")}` : ""}.`);
+    }
+
+    setLastSyncedAt(new Date().toISOString());
+    setOnlineLoading(false);
+  },[loadOnlineMembers, saveRemoteState]);
+
+  const persist = useCallback((next)=>{
+    const clean = sanitizeData(next);
+    setData(clean);
+    persistAll(clean);
+    if (SUPABASE_ENABLED && onlineWorkspace?.id && onlineUser?.id) {
+      setSyncStatus("Salvando no Supabase...");
+      saveRemoteState(onlineWorkspace.id, onlineUser.id, clean).then((result)=>{
+        if (result.ok) {
+          setLastSyncedAt(new Date().toISOString());
+          setSyncStatus("Salvo no Supabase.");
+        } else if (result.message) {
+          setSyncStatus(`Salvo localmente. Supabase: ${result.message}`);
+        }
+      });
+    }
+  },[onlineWorkspace?.id, onlineUser?.id, saveRemoteState]);
 
   useEffect(()=>{
     let alive = true;
     Promise.all([loadAll(), loadAuth(), loadSession()]).then(([d, a, s])=>{
       if (!alive) return;
+      localSeedRef.current = d;
       setData(d);
       setAuth(a);
       const validSession = s && a.users.some(u=>u.id===s.userId);
@@ -687,14 +852,72 @@ export default function App() {
     return ()=>{ alive = false; };
   },[]);
 
+  useEffect(()=>{
+    if (!loaded || !SUPABASE_ENABLED || !supabase) return undefined;
+    let active = true;
+
+    const resetOnline = () => {
+      setOnlineUser(null);
+      setOnlineWorkspace(null);
+      setOnlineMember(null);
+      setOnlineMembers([]);
+      setOnlineNeedsSetup(false);
+      setOnlineLoading(false);
+      setSyncStatus("Entre com email e senha para sincronizar.");
+    };
+
+    const start = async () => {
+      setOnlineLoading(true);
+      const { data: authData, error } = await supabase.auth.getSession();
+      if (!active) return;
+      if (error) {
+        setSyncStatus(`Auth: ${error.message}`);
+        setOnlineLoading(false);
+        return;
+      }
+      const user = authData.session?.user || null;
+      setOnlineUser(user);
+      if (user) await loadOnlineWorkspace(user, localSeedRef.current);
+      else resetOnline();
+    };
+
+    start();
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, authSession) => {
+      if (!active) return;
+      const user = authSession?.user || null;
+      setOnlineUser(user);
+      if (user) loadOnlineWorkspace(user, localSeedRef.current);
+      else resetOnline();
+    });
+
+    return () => {
+      active = false;
+      listener.subscription?.unsubscribe();
+    };
+  },[loaded, loadOnlineWorkspace]);
+
   const currentUser = useMemo(
     ()=>auth.users.find(u=>u.id===session?.userId) || null,
     [auth.users, session]
   );
 
+  const effectiveUser = useMemo(() => {
+    if (SUPABASE_ENABLED && onlineUser) {
+      const fallbackName = onlineUser.user_metadata?.display_name || onlineUser.email?.split("@")[0] || "Usuário";
+      return {
+        id: onlineUser.id,
+        name: onlineMember?.display_name || fallbackName,
+        login: onlineUser.email || "",
+        role: onlineMember?.role === "admin" ? "admin" : "user",
+        memberRole: onlineMember?.role || "member",
+      };
+    }
+    return currentUser;
+  },[currentUser, onlineMember, onlineUser]);
+
   useEffect(()=>{
-    if (tab==="admin" && currentUser?.role !== "admin") setTab("home");
-  },[tab,currentUser]);
+    if (tab==="admin" && effectiveUser?.role !== "admin") setTab("home");
+  },[tab,effectiveUser]);
 
   const createFirstUser = useCallback(async (form) => {
     const login = cleanLogin(form.login);
@@ -728,11 +951,95 @@ export default function App() {
     return { ok:true };
   },[auth,persistAuthState]);
 
-  const logout = useCallback(()=>{
+  const logout = useCallback(async ()=>{
     clearSession();
     setSession(null);
     setTab("home");
+    if (SUPABASE_ENABLED && supabase) {
+      await supabase.auth.signOut();
+      setOnlineUser(null);
+      setOnlineWorkspace(null);
+      setOnlineMember(null);
+      setOnlineMembers([]);
+      setOnlineNeedsSetup(false);
+      setOnlineLoading(false);
+      setSyncStatus("Sessão encerrada.");
+    }
   },[]);
+
+  const onlineSignIn = useCallback(async ({ email, password }) => {
+    if (!supabase) return { ok:false, message:"Supabase não configurado." };
+    const cleanEmail = String(email||"").trim().toLowerCase();
+    if (!cleanEmail || String(password||"").length < 6) {
+      return { ok:false, message:"Informe email e senha com pelo menos 6 caracteres." };
+    }
+    setOnlineLoading(true);
+    const { error } = await supabase.auth.signInWithPassword({ email:cleanEmail, password });
+    if (error) {
+      setOnlineLoading(false);
+      return { ok:false, message:error.message };
+    }
+    return { ok:true };
+  },[]);
+
+  const onlineSignUp = useCallback(async ({ name, email, password, confirm }) => {
+    if (!supabase) return { ok:false, message:"Supabase não configurado." };
+    const cleanEmail = String(email||"").trim().toLowerCase();
+    const displayName = String(name||"").trim();
+    if (!displayName || !cleanEmail || String(password||"").length < 6) {
+      return { ok:false, message:"Preencha nome, email e senha com pelo menos 6 caracteres." };
+    }
+    if (password !== confirm) return { ok:false, message:"As senhas não conferem." };
+    setOnlineLoading(true);
+    const { data: created, error } = await supabase.auth.signUp({
+      email: cleanEmail,
+      password,
+      options: { data:{ display_name:displayName } },
+    });
+    if (error) {
+      setOnlineLoading(false);
+      return { ok:false, message:error.message };
+    }
+    if (!created.session) {
+      setOnlineLoading(false);
+      return { ok:true, message:"Conta criada. Se o Supabase pedir confirmação, abra o email e depois entre com a senha." };
+    }
+    return { ok:true };
+  },[]);
+
+  const createOnlineWorkspace = useCallback(async (displayName) => {
+    if (!supabase || !onlineUser) return { ok:false, message:"Entre primeiro." };
+    const name = String(displayName||onlineUser.user_metadata?.display_name||onlineUser.email?.split("@")[0]||"").trim();
+    const { error } = await supabase.rpc("finance_bootstrap_workspace", { display_name:name || null });
+    if (error) return { ok:false, message:error.message };
+    await loadOnlineWorkspace(onlineUser, localSeedRef.current);
+    showToast("Espaço criado ✓");
+    return { ok:true };
+  },[loadOnlineWorkspace, onlineUser, showToast]);
+
+  const acceptOnlineInvite = useCallback(async ({ code, displayName }) => {
+    if (!supabase || !onlineUser) return { ok:false, message:"Entre primeiro." };
+    const inviteCode = String(code||"").trim().toUpperCase();
+    const name = String(displayName||onlineUser.user_metadata?.display_name||onlineUser.email?.split("@")[0]||"").trim();
+    if (!inviteCode) return { ok:false, message:"Informe o código de convite." };
+    const { error } = await supabase.rpc("finance_accept_invite", { invite_code:inviteCode, display_name:name || null });
+    if (error) return { ok:false, message:error.message };
+    await loadOnlineWorkspace(onlineUser, localSeedRef.current);
+    showToast("Convite aceito ✓");
+    return { ok:true };
+  },[loadOnlineWorkspace, onlineUser, showToast]);
+
+  const createOnlineInvite = useCallback(async (role) => {
+    if (!supabase || !onlineWorkspace?.id) return { ok:false, message:"Espaço ainda não carregado." };
+    if (onlineMember?.role !== "admin") return { ok:false, message:"Apenas admin pode criar convite." };
+    const { data: rows, error } = await supabase.rpc("finance_create_invite", {
+      target_workspace_id: onlineWorkspace.id,
+      invite_role: role === "admin" ? "admin" : "member",
+    });
+    if (error) return { ok:false, message:error.message };
+    const invite = Array.isArray(rows) ? rows[0] : rows;
+    return { ok:true, invite };
+  },[onlineMember, onlineWorkspace]);
 
   const createUser = useCallback(async (form) => {
     if (currentUser?.role !== "admin") return { ok:false, message:"Apenas admin pode criar acesso." };
@@ -796,14 +1103,7 @@ export default function App() {
   const addFixed   = useCallback((f)=>{ persist({...data,fixedExpenses:[...data.fixedExpenses,{...f,id:uid()}]}); showToast("Conta fixa salva ✓"); },[data,persist,showToast]);
   const deleteFixed= useCallback((id)=>{ persist({...data,fixedExpenses:data.fixedExpenses.filter(f=>f.id!==id)}); },[data,persist]);
   const importData = useCallback((next)=>{
-    const safe = {
-      ...DEFAULT_DATA,
-      ...next,
-      transactions: Array.isArray(next?.transactions) ? next.transactions : [],
-      goals: Array.isArray(next?.goals) ? next.goals : [],
-      fixedExpenses: Array.isArray(next?.fixedExpenses) ? next.fixedExpenses : [],
-      avatars: next?.avatars && typeof next.avatars==="object" ? next.avatars : {},
-    };
+    const safe = sanitizeData(next);
     persist(safe);
     showToast("Backup importado ✓");
   },[persist,showToast]);
@@ -813,15 +1113,23 @@ export default function App() {
     return d.getFullYear()===month.y && d.getMonth()===month.m && (person==="Todos"||t.pessoa===person);
   }),[data.transactions,month,person]);
 
-  if(!loaded) return (
-    <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:14}}>
-      <GlobalStyles/>
-      <div style={{fontFamily:F.display,fontSize:24,fontWeight:600,color:C.caramelDeep,fontStyle:"italic"}}>Finanças do Casal</div>
-      <Loader2 size={22} color={C.gold} style={{animation:"spin 1s linear infinite"}}/>
-    </div>
+  if(!loaded) return <LoadingScreen status="Carregando dados locais..." />;
+
+  if (SUPABASE_ENABLED && onlineLoading && !onlineWorkspace && !onlineNeedsSetup) {
+    return <LoadingScreen status={syncStatus} />;
+  }
+
+  if (SUPABASE_ENABLED && !onlineUser) return (
+    <OnlineAuthGate onLogin={onlineSignIn} onCreate={onlineSignUp} syncStatus={syncStatus}/>
   );
 
-  if (!currentUser) return (
+  if (SUPABASE_ENABLED && onlineUser && onlineNeedsSetup) return (
+    <OnlineWorkspaceGate user={onlineUser} onCreateWorkspace={createOnlineWorkspace} onAcceptInvite={acceptOnlineInvite} onLogout={logout}/>
+  );
+
+  if (SUPABASE_ENABLED && onlineUser && !onlineWorkspace) return <LoadingScreen status={syncStatus} />;
+
+  if (!SUPABASE_ENABLED && !currentUser) return (
     <AuthGate auth={auth} onCreateFirst={createFirstUser} onLogin={signIn}/>
   );
 
@@ -850,7 +1158,7 @@ export default function App() {
                 <div style={{marginLeft:-12}}><Avatar name={PEOPLE[1]} avatars={data.avatars} size={36}/></div>
               </div>
             </button>
-            <button onClick={logout} title={`Sair de ${currentUser.name}`} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:10,cursor:"pointer",display:"flex",boxShadow:C.shadowSm}}>
+            <button onClick={logout} title={`Sair de ${effectiveUser?.name || "usuário"}`} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:10,cursor:"pointer",display:"flex",boxShadow:C.shadowSm}}>
               <LogOut size={17} color={C.inkSoft}/>
             </button>
           </div>
@@ -877,7 +1185,21 @@ export default function App() {
         {tab==="extrato" && <Extrato tx={txMonth} avatars={data.avatars} onDelete={deleteTx} onEdit={setEditing} onViewPhoto={setPhotoView}/>}
         {tab==="metas"   && <Metas goals={data.goals} onAdd={addGoal} onUpdate={updateGoal} onDelete={deleteGoal}/>}
         {tab==="chat"    && <ChatIA transactions={data.transactions} fixedExpenses={data.fixedExpenses} goals={data.goals} avatars={data.avatars}/>}
-        {tab==="admin"   && currentUser.role==="admin" && <AdminPanel auth={auth} currentUser={publicUser(currentUser)} data={data} onCreateUser={createUser} onDeleteUser={deleteUser} onLogout={logout}/>}
+        {tab==="admin"   && effectiveUser?.role==="admin" && (
+          SUPABASE_ENABLED
+            ? <OnlineAdminPanel
+                currentUser={effectiveUser}
+                workspace={onlineWorkspace}
+                members={onlineMembers}
+                data={data}
+                syncStatus={syncStatus}
+                lastSyncedAt={lastSyncedAt}
+                onCreateInvite={createOnlineInvite}
+                onRefresh={()=>onlineUser && loadOnlineWorkspace(onlineUser, data)}
+                onLogout={logout}
+              />
+            : <AdminPanel auth={auth} currentUser={publicUser(currentUser)} data={data} onCreateUser={createUser} onDeleteUser={deleteUser} onLogout={logout}/>
+        )}
       </div>
 
       {/* ── BOTTOM NAV ── */}
@@ -890,7 +1212,7 @@ export default function App() {
           </button>
           <NavBtn icon={Target} label="Metas" active={tab==="metas"} onClick={()=>setTab("metas")}/>
           <NavBtn icon={MessageCircle} label="Agente" active={tab==="chat"} onClick={()=>setTab("chat")}/>
-          {currentUser.role==="admin"&&<NavBtn icon={ShieldCheck} label="Admin" active={tab==="admin"} onClick={()=>setTab("admin")}/>}
+          {effectiveUser?.role==="admin"&&<NavBtn icon={ShieldCheck} label="Admin" active={tab==="admin"} onClick={()=>setTab("admin")}/>}
         </div>
       </div>
 
@@ -915,6 +1237,269 @@ export default function App() {
 /* ═══════════════════════════════════════════════
    ACESSO E ADMIN
 ═══════════════════════════════════════════════ */
+function OnlineAuthGate({ onLogin, onCreate, syncStatus }) {
+  const [mode, setMode] = useState("login");
+  const [form, setForm] = useState({ name:"Rubens", email:"", password:"", confirm:"" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const s = (k,v) => { setForm(f=>({...f,[k]:v})); setError(""); setMessage(""); };
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    setMessage("");
+    const result = mode === "create" ? await onCreate(form) : await onLogin(form);
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.message);
+      return;
+    }
+    if (result.message) setMessage(result.message);
+  };
+
+  return (
+    <div style={{minHeight:"100vh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+      <GlobalStyles/>
+      <Card style={{width:"100%",maxWidth:430,padding:24}}>
+        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:18}}>
+          <div style={{width:48,height:48,borderRadius:14,background:C.greenPale,display:"flex",alignItems:"center",justifyContent:"center"}}>
+            <Cloud size={22} color={C.caramelDeep}/>
+          </div>
+          <div>
+            <Eyebrow>Supabase seguro</Eyebrow>
+            <div style={{fontFamily:F.display,fontSize:24,fontWeight:600,lineHeight:1.05}}>Finanças do Casal</div>
+          </div>
+        </div>
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:16}}>
+          <button type="button" onClick={()=>setMode("login")} style={{border:`1.5px solid ${mode==="login"?C.ink:C.border}`,background:mode==="login"?C.ink:C.surface,color:mode==="login"?"#F6F1E7":C.inkSoft,borderRadius:13,padding:"10px 12px",fontWeight:800,cursor:"pointer",fontFamily:F.body}}>Entrar</button>
+          <button type="button" onClick={()=>setMode("create")} style={{border:`1.5px solid ${mode==="create"?C.ink:C.border}`,background:mode==="create"?C.ink:C.surface,color:mode==="create"?"#F6F1E7":C.inkSoft,borderRadius:13,padding:"10px 12px",fontWeight:800,cursor:"pointer",fontFamily:F.body}}>Criar conta</button>
+        </div>
+
+        <form onSubmit={submit}>
+          {mode==="create"&&(
+            <>
+              <Eyebrow style={{marginBottom:5}}>Nome</Eyebrow>
+              <Input value={form.name} onChange={e=>s("name",e.target.value)} placeholder="Rubens" autoComplete="name" style={{marginBottom:10}}/>
+            </>
+          )}
+          <Eyebrow style={{marginBottom:5}}>Email</Eyebrow>
+          <Input autoFocus type="email" value={form.email} onChange={e=>s("email",e.target.value)} placeholder="voce@email.com" autoComplete="email" style={{marginBottom:10}}/>
+          <Eyebrow style={{marginBottom:5}}>Senha</Eyebrow>
+          <Input type="password" value={form.password} onChange={e=>s("password",e.target.value)} placeholder="Mínimo 6 caracteres" autoComplete={mode==="create"?"new-password":"current-password"} style={{marginBottom:mode==="create"?10:14}}/>
+          {mode==="create"&&(
+            <>
+              <Eyebrow style={{marginBottom:5}}>Confirmar senha</Eyebrow>
+              <Input type="password" value={form.confirm} onChange={e=>s("confirm",e.target.value)} placeholder="Repita a senha" autoComplete="new-password" style={{marginBottom:14}}/>
+            </>
+          )}
+          {error&&(
+            <div style={{background:C.redPale,border:`1px solid rgba(194,65,58,0.18)`,borderRadius:12,padding:"10px 12px",fontSize:12.5,color:C.red,marginBottom:12,fontWeight:700}}>
+              {error}
+            </div>
+          )}
+          {message&&(
+            <div style={{background:C.greenPale,border:`1px solid rgba(23,129,95,0.16)`,borderRadius:12,padding:"10px 12px",fontSize:12.5,color:C.green,marginBottom:12,fontWeight:700}}>
+              {message}
+            </div>
+          )}
+          <Btn variant="gold" disabled={busy} style={{width:"100%"}}>
+            {busy ? <Loader2 size={15} style={{animation:"spin 1s linear infinite"}}/> : <KeyRound size={15}/>}
+            {mode==="create" ? "Criar conta" : "Entrar"}
+          </Btn>
+        </form>
+
+        <div style={{marginTop:14,fontSize:12.3,lineHeight:1.5,color:C.muted,background:C.bluePale,border:`1px solid rgba(37,99,168,0.14)`,borderRadius:12,padding:"10px 12px",display:"flex",gap:8}}>
+          <Database size={15} color={C.blue} style={{flexShrink:0,marginTop:1}}/>
+          <span>{syncStatus}</span>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function OnlineWorkspaceGate({ user, onCreateWorkspace, onAcceptInvite, onLogout }) {
+  const displayFallback = user?.user_metadata?.display_name || user?.email?.split("@")[0] || "";
+  const [mode, setMode] = useState("create");
+  const [form, setForm] = useState({ displayName:displayFallback, code:"" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const s = (k,v) => { setForm(f=>({...f,[k]:v})); setError(""); };
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    const result = mode === "create"
+      ? await onCreateWorkspace(form.displayName)
+      : await onAcceptInvite({ code:form.code, displayName:form.displayName });
+    setBusy(false);
+    if (!result.ok) setError(result.message);
+  };
+
+  return (
+    <div style={{minHeight:"100vh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+      <GlobalStyles/>
+      <Card style={{width:"100%",maxWidth:430,padding:24}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,marginBottom:18}}>
+          <div>
+            <Eyebrow>Primeiro passo</Eyebrow>
+            <div style={{fontFamily:F.display,fontSize:24,fontWeight:600,lineHeight:1.05}}>Espaço do casal</div>
+            <div style={{fontSize:12.5,color:C.muted,marginTop:4,wordBreak:"break-word"}}>{user?.email}</div>
+          </div>
+          <button onClick={onLogout} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:9,cursor:"pointer",display:"flex"}}>
+            <LogOut size={16} color={C.inkSoft}/>
+          </button>
+        </div>
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:16}}>
+          <button type="button" onClick={()=>setMode("create")} style={{border:`1.5px solid ${mode==="create"?C.ink:C.border}`,background:mode==="create"?C.ink:C.surface,color:mode==="create"?"#F6F1E7":C.inkSoft,borderRadius:13,padding:"10px 12px",fontWeight:800,cursor:"pointer",fontFamily:F.body}}>Criar</button>
+          <button type="button" onClick={()=>setMode("join")} style={{border:`1.5px solid ${mode==="join"?C.ink:C.border}`,background:mode==="join"?C.ink:C.surface,color:mode==="join"?"#F6F1E7":C.inkSoft,borderRadius:13,padding:"10px 12px",fontWeight:800,cursor:"pointer",fontFamily:F.body}}>Convite</button>
+        </div>
+
+        <form onSubmit={submit}>
+          <Eyebrow style={{marginBottom:5}}>Seu nome</Eyebrow>
+          <Input value={form.displayName} onChange={e=>s("displayName",e.target.value)} placeholder="Rubens" autoComplete="name" style={{marginBottom:10}}/>
+          {mode==="join"&&(
+            <>
+              <Eyebrow style={{marginBottom:5}}>Código</Eyebrow>
+              <Input value={form.code} onChange={e=>s("code",e.target.value.toUpperCase())} placeholder="ABC123" autoComplete="one-time-code" style={{marginBottom:14,textTransform:"uppercase",fontWeight:800,letterSpacing:1}}/>
+            </>
+          )}
+          {error&&<div style={{fontSize:12.5,color:C.red,fontWeight:700,marginBottom:10}}>{error}</div>}
+          <Btn variant="gold" disabled={busy} style={{width:"100%"}}>
+            {busy ? <Loader2 size={15} style={{animation:"spin 1s linear infinite"}}/> : <ShieldCheck size={15}/>}
+            {mode==="create" ? "Criar espaço" : "Entrar no espaço"}
+          </Btn>
+        </form>
+      </Card>
+    </div>
+  );
+}
+
+function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, lastSyncedAt, onCreateInvite, onRefresh, onLogout }) {
+  const [role, setRole] = useState("member");
+  const [invite, setInvite] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  const createInvite = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    setCopied(false);
+    const result = await onCreateInvite(role);
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.message);
+      return;
+    }
+    setInvite(result.invite);
+  };
+
+  const copyInvite = async () => {
+    const code = invite?.code || "";
+    if (!code) return;
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(()=>setCopied(false),1800);
+    } catch {
+      setError("Não consegui copiar automaticamente.");
+    }
+  };
+
+  return (
+    <div className="su">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <div>
+          <div style={{fontFamily:F.display,fontSize:22,fontWeight:600}}>Admin</div>
+          <div style={{fontSize:12,color:C.muted}}>Sessão: <b>{currentUser.name}</b></div>
+        </div>
+        <Btn variant="outline" small onClick={onLogout}><LogOut size={14}/> Sair</Btn>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
+        <Card style={{padding:14,background:C.greenPale,border:`1px solid rgba(23,129,95,0.16)`}}>
+          <Eyebrow style={{color:C.green}}>Lançamentos</Eyebrow>
+          <div style={{fontFamily:F.display,fontSize:22,fontWeight:600,color:C.green,marginTop:4}}>{data.transactions.length}</div>
+        </Card>
+        <Card style={{padding:14,background:C.plumPale,border:`1px solid rgba(91,75,178,0.15)`}}>
+          <Eyebrow style={{color:C.plum}}>Membros</Eyebrow>
+          <div style={{fontFamily:F.display,fontSize:22,fontWeight:600,color:C.plum,marginTop:4}}>{members.length}</div>
+        </Card>
+      </div>
+
+      <Card style={{marginBottom:14}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+          <Cloud size={17} color={C.caramelDeep}/>
+          <div style={{fontFamily:F.display,fontSize:17,fontWeight:600}}>Supabase</div>
+        </div>
+        <div style={{fontSize:12.5,color:C.inkSoft,lineHeight:1.55}}>
+          <div><b>Espaço:</b> {workspace?.name || "Finanças do Casal"}</div>
+          <div><b>Status:</b> {syncStatus}</div>
+          {lastSyncedAt&&<div><b>Último salvamento:</b> {new Date(lastSyncedAt).toLocaleString("pt-BR")}</div>}
+        </div>
+        <Btn variant="ghost" small onClick={onRefresh} style={{marginTop:12}}><RotateCcw size={14}/> Atualizar</Btn>
+      </Card>
+
+      <Card style={{marginBottom:14}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+          <UserPlus size={17} color={C.caramelDeep}/>
+          <div style={{fontFamily:F.display,fontSize:17,fontWeight:600}}>Criar convite</div>
+        </div>
+        <form onSubmit={createInvite}>
+          <Eyebrow style={{marginBottom:5}}>Perfil</Eyebrow>
+          <Select value={role} onChange={e=>setRole(e.target.value)} style={{marginBottom:12}}>
+            <option value="member">Membro</option>
+            <option value="admin">Admin</option>
+          </Select>
+          {error&&<div style={{fontSize:12.5,color:C.red,fontWeight:700,marginBottom:10}}>{error}</div>}
+          <Btn variant="gold" disabled={busy} style={{width:"100%"}}>
+            {busy ? <Loader2 size={14} style={{animation:"spin 1s linear infinite"}}/> : <UserPlus size={15}/>}
+            Gerar convite
+          </Btn>
+        </form>
+        {invite?.code&&(
+          <div style={{marginTop:14,background:C.bluePale,border:`1px solid rgba(37,99,168,0.14)`,borderRadius:14,padding:12}}>
+            <Eyebrow style={{color:C.blue,marginBottom:6}}>Código</Eyebrow>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <div style={{fontSize:24,fontWeight:900,letterSpacing:2,color:C.blue,flex:1}}>{invite.code}</div>
+              <button type="button" onClick={copyInvite} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:10,cursor:"pointer",display:"flex"}}>
+                <Copy size={16} color={C.blue}/>
+              </button>
+            </div>
+            <div style={{fontSize:11.5,color:C.muted,marginTop:6}}>
+              {copied ? "Copiado." : `Perfil: ${invite.role==="admin"?"Admin":"Membro"}. Expira em ${new Date(invite.expires_at).toLocaleDateString("pt-BR")}.`}
+            </div>
+          </div>
+        )}
+      </Card>
+
+      <Card style={{marginBottom:14}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+          <Users size={17} color={C.plum}/>
+          <div style={{fontFamily:F.display,fontSize:17,fontWeight:600}}>Membros</div>
+        </div>
+        {members.map(member=>(
+          <div key={member.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:`1px solid ${C.hairline}`}}>
+            <div style={{width:38,height:38,borderRadius:12,background:member.role==="admin"?C.greenPale:C.bgAlt,display:"flex",alignItems:"center",justifyContent:"center"}}>
+              {member.role==="admin"?<ShieldCheck size={17} color={C.caramelDeep}/>:<UserRound size={17} color={C.inkSoft}/>}
+            </div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontWeight:800,fontSize:13.5,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{member.display_name || "Sem nome"}</div>
+              <div style={{fontSize:11.5,color:C.muted}}>{member.role==="admin"?"admin":"membro"}</div>
+            </div>
+          </div>
+        ))}
+      </Card>
+    </div>
+  );
+}
+
 function AuthGate({ auth, onCreateFirst, onLogin }) {
   const isSetup = auth.users.length === 0;
   const [form, setForm] = useState(isSetup

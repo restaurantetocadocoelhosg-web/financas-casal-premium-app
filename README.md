@@ -9,7 +9,9 @@ Aplicativo React para Rubens e Nayara acompanharem gastos, ganhos, metas e relat
 - Agente financeiro local para resumo do mês, economia, metas e contas fixas.
 - Relatórios com exportação em CSV, planilha Excel compatível (`.xls`), PDF e impressão.
 - Backup/importação em JSON para trocar dados entre aparelhos.
-- Primeiro acesso com criação de admin, login por usuário/senha e aba Admin para criar novos acessos.
+- Login online por email/senha com Supabase Auth.
+- Espaço compartilhado no Supabase com sincronização automática dos dados.
+- Aba Admin para acompanhar membros, status da sincronização e gerar convites.
 
 ## Rodar localmente
 
@@ -28,6 +30,16 @@ npm run build
 
 O projeto já inclui `.github/workflows/pages.yml`. Depois de enviar para um repositório no GitHub, cada push na branch `main` gera e publica o site pelo GitHub Pages.
 
+## Supabase
+
+O frontend continua hospedado no GitHub Pages, e o login/dados usam o projeto Supabase:
+
+- URL: `https://zuwdgyvbuaocbzckhhlm.supabase.co`
+- Tabelas: `finance_workspaces`, `finance_members`, `finance_app_state`, `finance_invites`
+- RPCs: `finance_bootstrap_workspace`, `finance_create_invite`, `finance_accept_invite`
+
+As tabelas do app usam RLS. As RPCs de criação/convite exigem usuário autenticado.
+
 ## Observação sobre dados
 
-Os dados e acessos ficam no navegador de cada aparelho via `localStorage`. Use o backup JSON para transferir ou guardar uma cópia. No GitHub Pages, a senha protege o uso local do app, mas não substitui autenticação com servidor. Para uso compartilhado em tempo real e login centralizado, o próximo passo recomendado é adicionar banco de dados e autenticação, por exemplo Supabase.
+O app ainda mantém uma cópia local para carregamento e backup. Na primeira entrada online, se o Supabase estiver vazio e houver dados neste aparelho, o app envia esse histórico para o workspace. O modo offline interno/instalável fica para a próxima fase de teste.
