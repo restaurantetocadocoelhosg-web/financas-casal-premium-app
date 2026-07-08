@@ -55,7 +55,8 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 const PEOPLE = ["Rubens", "Nayara"];
-const PERSON_COLOR = { Rubens: C.caramelDeep, Nayara: C.plum };
+const PESSOA_CASAL = "Casal";
+const PERSON_COLOR = { Rubens: C.caramelDeep, Nayara: C.plum, [PESSOA_CASAL]: C.green };
 const PAYMENTS = ["Pix", "Dinheiro", "Crédito", "Débito", "Boleto", "Transferência", "Outro"];
 const CAT_GASTO = ["Mercado","Padaria","Açougue","Farmácia","Restaurante","Delivery","Combustível","Casa","Energia","Água","Internet","Streaming","Assinaturas","Carro","Seguro","Lazer","Roupas","Pets","Presentes","Saúde","Viagem","Impostos","Outros"];
 const CAT_GANHO = ["Salário","Vendas","Freelance","Investimentos","Reembolso","Outros ganhos"];
@@ -516,7 +517,8 @@ function interpretFinancialText(text, defaultPerson) {
   const valor = detectMoney(text);
   if (!valor) throw new Error("valor");
   const tipo = /(recebi|ganhei|entrou|salario|venda|freela|reembolso)/.test(clean) ? "ganho" : "gasto";
-  const pessoa = PEOPLE.find(p=>clean.includes(normalize(p))) || defaultPerson;
+  const ehCompartilhado = /(juntos|junto|os dois|nos dois|em casal|\bcasal\b|nos gastamos|gastamos)/.test(clean);
+  const pessoa = ehCompartilhado ? PESSOA_CASAL : (PEOPLE.find(p=>clean.includes(normalize(p))) || defaultPerson);
   const categoria = detectCategory(text, tipo);
   const pagamento = detectPayment(text);
   const necessaryFalse = ["Delivery","Restaurante","Streaming","Lazer","Roupas","Presentes","Viagem"].includes(categoria) || /(besteira|supérfluo|superfluo|luxo)/.test(clean);
@@ -537,7 +539,7 @@ function answerFinanceQuestion(question, transactions, fixedExpenses=[], goals=[
   const q = normalize(question);
   const now = new Date();
   const month = { y: now.getFullYear(), m: now.getMonth() };
-  const person = PEOPLE.find(p=>q.includes(normalize(p))) || "Todos";
+  const person = /(juntos|junto|os dois|nos dois|em casal|\bcasal\b)/.test(q) ? PESSOA_CASAL : (PEOPLE.find(p=>q.includes(normalize(p))) || "Todos");
   const report = buildFinancialReport(transactions, fixedExpenses, goals, month, person);
   const category = [...CAT_GASTO, ...CAT_GANHO].find(c=>q.includes(normalize(c)));
   if (category) {
@@ -1166,7 +1168,7 @@ export default function App() {
 
         {/* ── FILTRO PESSOA (chips com avatar) ── */}
         <div style={{display:"flex",gap:8,marginBottom:16}}>
-          {["Todos",...PEOPLE].map(p=>(
+          {["Todos",...PEOPLE,PESSOA_CASAL].map(p=>(
             <button key={p} onClick={()=>setPerson(p)} style={{display:"flex",alignItems:"center",gap:7,padding:p==="Todos"?"8px 16px":"5px 14px 5px 6px",borderRadius:99,border:`1.5px solid ${person===p?C.ink:C.border}`,background:person===p?C.ink:C.surface,color:person===p?"#F6F1E7":C.inkSoft,fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:F.body}}>
               {p!=="Todos"&&<Avatar name={p} avatars={data.avatars} size={26} ring={false}/>}
               {p}
@@ -1705,7 +1707,11 @@ function Dashboard({ tx, allTx, month, fixed, avatars, onNewAI, onNewNota, onNew
     gasto:gastos.filter(t=>Math.ceil(new Date(t.data+"T12:00:00").getDate()/7)===w).reduce((s,t)=>s+Number(t.valor),0),
     ganho:ganhos.filter(t=>Math.ceil(new Date(t.data+"T12:00:00").getDate()/7)===w).reduce((s,t)=>s+Number(t.valor),0),
   }));
-  const byPerson = PEOPLE.map(p=>({name:p,gasto:gastos.filter(t=>t.pessoa===p).reduce((s,t)=>s+Number(t.valor),0)}));
+  const gastoCasal = gastos.filter(t=>t.pessoa===PESSOA_CASAL).reduce((s,t)=>s+Number(t.valor),0);
+  const byPerson = [
+    ...PEOPLE.map(p=>({name:p,gasto:gastos.filter(t=>t.pessoa===p).reduce((s,t)=>s+Number(t.valor),0)})),
+    ...(gastoCasal>0 ? [{name:PESSOA_CASAL,gasto:gastoCasal}] : []),
+  ];
   const topCat = byCat[0];
   const maiorCompra = [...gastos].sort((a,b)=>Number(b.valor)-Number(a.valor))[0];
   const supTotal = gastos.filter(t=>!t.necessario).reduce((s,t)=>s+Number(t.valor),0);
@@ -2321,13 +2327,14 @@ function TxForm({ tx, avatars, onChange, onCancel, onSave, saveLabel }) {
       <div style={{marginTop:12}}>
         <Eyebrow style={{marginBottom:6}}>Quem foi</Eyebrow>
         <div style={{display:"flex",gap:8}}>
-          {PEOPLE.map(p=>(
-            <button key={p} onClick={()=>s("pessoa",p)} style={{flex:1,display:"flex",alignItems:"center",gap:8,padding:"8px 12px",borderRadius:14,border:`1.5px solid ${tx.pessoa===p?PERSON_COLOR[p]:C.border}`,background:tx.pessoa===p?(p===PEOPLE[0]?C.goldPale:C.plumPale):"#FBF7EE",cursor:"pointer",fontFamily:F.body}}>
+          {[...PEOPLE, PESSOA_CASAL].map(p=>(
+            <button key={p} onClick={()=>s("pessoa",p)} style={{flex:1,display:"flex",alignItems:"center",gap:8,padding:"8px 12px",borderRadius:14,border:`1.5px solid ${tx.pessoa===p?PERSON_COLOR[p]:C.border}`,background:tx.pessoa===p?(p===PEOPLE[0]?C.goldPale:p===PEOPLE[1]?C.plumPale:C.greenPale):"#FBF7EE",cursor:"pointer",fontFamily:F.body}}>
               <Avatar name={p} avatars={avatars} size={28} ring={false}/>
               <span style={{fontWeight:700,fontSize:13,color:tx.pessoa===p?PERSON_COLOR[p]:C.muted}}>{p}</span>
             </button>
           ))}
         </div>
+        {tx.pessoa===PESSOA_CASAL && <div style={{marginTop:6,fontSize:11.5,color:C.muted,fontFamily:F.body}}>Gasto do casal: entra nos relatórios como uma categoria própria, sem contar pra nenhum dos dois individualmente.</div>}
       </div>
       <div style={{marginTop:10}}>
         <Eyebrow style={{marginBottom:4}}>Classificação</Eyebrow>
