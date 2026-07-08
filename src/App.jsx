@@ -670,7 +670,7 @@ function GlobalStyles() {
   );
 }
 
-function LoadingScreen({ label="Finanças do Casal", status }) {
+function LoadingScreen({ label="Prosperidade", status }) {
   return (
     <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:14,padding:20,textAlign:"center"}}>
       <GlobalStyles/>
@@ -1169,7 +1169,7 @@ export default function App() {
           <div>
             <Eyebrow>{greeting()}</Eyebrow>
             <div style={{fontFamily:F.display,fontSize:26,fontWeight:600,letterSpacing:0,lineHeight:1.1}}>
-              Finanças <em style={{color:C.caramelDeep}}>do Casal</em>
+              <em style={{color:C.caramelDeep}}>Prosperidade</em>
             </div>
           </div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
@@ -1356,7 +1356,8 @@ function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, syncSta
           </div>
           <div>
             <Eyebrow>Supabase seguro</Eyebrow>
-            <div style={{fontFamily:F.display,fontSize:24,fontWeight:600,lineHeight:1.05}}>Finanças do Casal</div>
+            <div style={{fontFamily:F.display,fontSize:24,fontWeight:600,lineHeight:1.05}}>Prosperidade</div>
+            <div style={{fontSize:11.5,color:C.muted,fontWeight:600,letterSpacing:0.3,marginTop:2}}>Metas em dia = Prosperidade certa</div>
           </div>
         </div>
 
@@ -1526,7 +1527,7 @@ function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, l
           <div style={{fontFamily:F.display,fontSize:17,fontWeight:600}}>Supabase</div>
         </div>
         <div style={{fontSize:12.5,color:C.inkSoft,lineHeight:1.55}}>
-          <div><b>Espaço:</b> {workspace?.name || "Finanças do Casal"}</div>
+          <div><b>Espaço:</b> {workspace?.name || "Prosperidade"}</div>
           <div><b>Status:</b> {syncStatus}</div>
           {lastSyncedAt&&<div><b>Último salvamento:</b> {new Date(lastSyncedAt).toLocaleString("pt-BR")}</div>}
         </div>
@@ -1616,7 +1617,7 @@ function AuthGate({ auth, onCreateFirst, onLogin }) {
           </div>
           <div>
             <Eyebrow>{isSetup ? "Primeiro acesso" : "Acesso privado"}</Eyebrow>
-            <div style={{fontFamily:F.display,fontSize:24,fontWeight:600,lineHeight:1.05}}>Finanças do Casal</div>
+            <div style={{fontFamily:F.display,fontSize:24,fontWeight:600,lineHeight:1.05}}>Prosperidade</div>
           </div>
         </div>
 

@@ -1,7 +1,7 @@
 {
-  "name": "Finanças do Casal",
-  "short_name": "Finanças",
-  "description": "Controle financeiro do casal com relatórios, metas e exportação.",
+  "name": "Prosperidade",
+  "short_name": "Prosperidade",
+  "description": "Metas em dia = prosperidade certa. Controle financeiro com relatórios, metas e exportação.",
   "start_url": "./",
   "display": "standalone",
   "background_color": "#f7f8f4",

@@ -1,6 +1,6 @@
-# Finanças do Casal
+# Prosperidade
 
-Aplicativo React para Rubens e Nayara acompanharem gastos, ganhos, metas e relatórios mensais.
+Aplicativo React de controle financeiro — gastos, ganhos, metas e relatórios mensais.
 
 ## Funções principais
 
