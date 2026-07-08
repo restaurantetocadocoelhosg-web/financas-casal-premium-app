@@ -57,6 +57,8 @@ const SESSION_KEY = "financas-casal-session-v1";
 // v-multi-tenant: nomes NAO sao mais fixos (cada workspace tem os seus, vindos de finance_members).
 // Cor por pessoa: hash estavel do nome -> mesma cor sempre, sem precisar saber a lista toda.
 const PESSOA_CASAL = "Casal";
+const TERMS_APP_NAME = "prosperidade";
+const TERMS_VERSION = "1.0";
 const PERSON_PALETTE = [C.caramelDeep, C.plum, C.blue, C.gold, "#B5533C", "#3D8361", "#8155A6"];
 function colorForPerson(name) {
   if (name === PESSOA_CASAL) return C.green;
@@ -717,6 +719,7 @@ export default function App() {
   const [onlineLoading, setOnlineLoading] = useState(SUPABASE_ENABLED);
   const [syncStatus, setSyncStatus] = useState(SUPABASE_ENABLED ? "Conectando ao Supabase..." : "Modo local");
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
+  const [termsAccepted, setTermsAccepted] = useState(null); // null=verificando, true/false depois
   const localSeedRef = useRef(DEFAULT_DATA);
 
   const showToast = useCallback((msg)=>{ setToast(msg); setTimeout(()=>setToast(null),2600); },[]);
@@ -975,8 +978,49 @@ export default function App() {
       setOnlineNeedsSetup(false);
       setOnlineLoading(false);
       setSyncStatus("Sessão encerrada.");
+      setTermsAccepted(null);
     }
   },[]);
+
+  // Termo de uso: verifica 1x por workspace carregado; se ja aceitou esta versao, libera direto.
+  useEffect(() => {
+    if (!SUPABASE_ENABLED || !supabase || !onlineUser || !onlineWorkspace) return;
+    let alive = true;
+    (async () => {
+      try {
+        const r = await supabase
+          .from("terms_acceptance")
+          .select("id")
+          .eq("user_name", onlineUser.email)
+          .eq("app_name", TERMS_APP_NAME)
+          .eq("terms_version", TERMS_VERSION)
+          .limit(1);
+        if (!alive) return;
+        setTermsAccepted(Boolean(r.data && r.data.length));
+      } catch {
+        if (alive) setTermsAccepted(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [onlineUser, onlineWorkspace]);
+
+  const acceptTerms = useCallback(async () => {
+    if (!supabase || !onlineUser) return { ok:false };
+    try {
+      await supabase.from("terms_acceptance").insert({
+        user_name: onlineUser.email,
+        app_name: TERMS_APP_NAME,
+        terms_version: TERMS_VERSION,
+        accepted_at: new Date().toISOString(),
+        ip_address: null,
+        user_agent: typeof navigator !== "undefined" ? navigator.userAgent : null,
+      });
+      setTermsAccepted(true);
+      return { ok:true };
+    } catch (e) {
+      return { ok:false, message: e?.message || "Erro ao registrar aceite." };
+    }
+  }, [onlineUser]);
 
   const onlineSignIn = useCallback(async ({ email, password }) => {
     if (!supabase) return { ok:false, message:"Supabase não configurado." };
@@ -1161,6 +1205,14 @@ export default function App() {
   );
 
   if (SUPABASE_ENABLED && onlineUser && !onlineWorkspace) return <LoadingScreen status={syncStatus} />;
+
+  if (SUPABASE_ENABLED && onlineUser && onlineWorkspace && termsAccepted === null) {
+    return <LoadingScreen status="Verificando termo de uso..." />;
+  }
+
+  if (SUPABASE_ENABLED && onlineUser && onlineWorkspace && termsAccepted === false) {
+    return <TermsGate onAccept={acceptTerms} onDecline={logout}/>;
+  }
 
   if (!SUPABASE_ENABLED && !currentUser) return (
     <AuthGate auth={auth} onCreateFirst={createFirstUser} onLogin={signIn}/>
@@ -1634,6 +1686,76 @@ function ShareAppCard() {
         <Copy size={14}/> {copied ? "Copiado!" : "Copiar mensagem de convite"}
       </Btn>
     </Card>
+  );
+}
+
+/* ═══════════════════════════════════════════════
+   TERMO DE USO — aceite obrigatorio antes de entrar
+═══════════════════════════════════════════════ */
+function TermsGate({ onAccept, onDecline }) {
+  const [checked, setChecked] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const accept = async () => {
+    if (!checked || busy) return;
+    setBusy(true);
+    setError("");
+    const r = await onAccept();
+    setBusy(false);
+    if (!r.ok) setError(r.message || "Não consegui registrar o aceite. Tente de novo.");
+  };
+
+  return (
+    <div style={{minHeight:"100vh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+      <GlobalStyles/>
+      <Card style={{width:"100%",maxWidth:520,padding:0,display:"flex",flexDirection:"column",maxHeight:"92vh"}}>
+        <div style={{padding:"22px 24px 14px"}}>
+          <Eyebrow>Antes de continuar</Eyebrow>
+          <div style={{fontFamily:F.display,fontSize:22,fontWeight:600,lineHeight:1.1}}>Termo de Uso e Privacidade</div>
+        </div>
+        <div style={{overflowY:"auto",padding:"0 24px",fontSize:12.5,lineHeight:1.65,color:C.inkSoft,flex:1}}>
+          <p style={{fontWeight:700,fontSize:11,textAlign:"center",color:C.muted,marginBottom:14}}>TERMO DE USO, PRIVACIDADE E ISENÇÃO DE RESPONSABILIDADE — v{TERMS_VERSION}</p>
+
+          <h4 style={{fontSize:12.5,color:C.ink,marginBottom:4}}>1. O que é o Prosperidade</h4>
+          <p>O Prosperidade é uma ferramenta de controle financeiro pessoal, oferecida gratuitamente, para lançamento de gastos e ganhos, definição de metas e geração de relatórios. Cada pessoa que se cadastra cria a sua própria área ("workspace"), isolada das demais, salvo quando ela mesma optar por compartilhar sua área com outra pessoa através de um código de convite gerado dentro do próprio aplicativo.</p>
+
+          <h4 style={{fontSize:12.5,color:C.ink,marginBottom:4,marginTop:12}}>2. Uso voluntário e responsabilidade pelos dados inseridos</h4>
+          <p>O uso do Prosperidade é inteiramente voluntário. Todos os lançamentos, categorias, valores e metas são inseridos pelo próprio USUÁRIO, que é o único responsável pela exatidão, completude e veracidade dessas informações. O aplicativo não audita, valida ou corrige os dados inseridos.</p>
+
+          <h4 style={{fontSize:12.5,color:C.ink,marginBottom:4,marginTop:12}}>3. Não constitui aconselhamento financeiro</h4>
+          <p>O Prosperidade é uma ferramenta de organização e visualização de dados financeiros pessoais. Ele NÃO constitui consultoria financeira, contábil, tributária ou de investimentos. Decisões financeiras tomadas com base nas informações do aplicativo são de responsabilidade exclusiva do USUÁRIO.</p>
+
+          <h4 style={{fontSize:12.5,color:C.ink,marginBottom:4,marginTop:12}}>4. Compartilhamento de área (modo "dividir")</h4>
+          <p>Quando o USUÁRIO opta por gerar um convite para dividir sua área com outra pessoa, ambos passam a visualizar os mesmos lançamentos, metas e relatórios daquele espaço. Essa decisão é voluntária e de responsabilidade de quem gera e de quem aceita o convite. A criação de conta SEM uso de código de convite gera uma área totalmente independente, sem qualquer vínculo ou visibilidade cruzada com outras áreas.</p>
+
+          <h4 style={{fontSize:12.5,color:C.ink,marginBottom:4,marginTop:12}}>5. Proteção de Dados Pessoais (LGPD)</h4>
+          <p>Os dados pessoais do USUÁRIO (nome, e-mail) e os dados financeiros inseridos por ele são tratados em conformidade com a Lei Geral de Proteção de Dados (Lei nº 13.709/2018 — LGPD), com a finalidade exclusiva de prestação do serviço. Esses dados NÃO são vendidos, compartilhados ou divulgados a terceiros para qualquer finalidade comercial ou de exposição pública. O acesso aos dados de cada área é restrito ao(s) próprio(s) membro(s) daquela área, por meio de controle de acesso técnico (Row Level Security) que impede a visualização por outras contas.</p>
+
+          <h4 style={{fontSize:12.5,color:C.ink,marginBottom:4,marginTop:12}}>6. Segurança e disponibilidade</h4>
+          <p>Empregam-se esforços razoáveis de segurança técnica para proteger os dados armazenados. Ainda assim, nenhum sistema informatizado está livre de falhas, indisponibilidades ou incidentes de segurança. Recomenda-se que o USUÁRIO faça, periodicamente, backup dos seus dados através da função de exportação disponível no próprio aplicativo. O serviço é fornecido gratuitamente, "como está", sem garantia de disponibilidade contínua e ininterrupta.</p>
+
+          <h4 style={{fontSize:12.5,color:C.ink,marginBottom:4,marginTop:12}}>7. Atualizações deste Termo</h4>
+          <p>Este Termo poderá ser atualizado a qualquer momento. Alterações relevantes poderão exigir um novo aceite para continuidade do uso do aplicativo.</p>
+
+          <p style={{textAlign:"center",fontSize:9,color:C.muted,marginTop:16,marginBottom:4}}>O aceite digital possui validade jurídica nos termos do Art. 10, §2º, da MP nº 2.200-2/2001, do Art. 107 do Código Civil e do Marco Civil da Internet (Lei nº 12.965/2014, Art. 7º, I).</p>
+        </div>
+        <div style={{padding:"14px 24px 22px",borderTop:`1px solid ${C.hairline}`,marginTop:10}}>
+          <label style={{display:"flex",alignItems:"flex-start",gap:8,marginBottom:12,cursor:"pointer"}}>
+            <input type="checkbox" checked={checked} onChange={e=>setChecked(e.target.checked)} style={{marginTop:2,width:16,height:16,flexShrink:0}}/>
+            <span style={{fontSize:12,color:C.inkSoft,lineHeight:1.5}}>Declaro que li e compreendi os termos acima e aceito as condições de uso e privacidade do Prosperidade.</span>
+          </label>
+          {error&&<div style={{fontSize:12,color:C.red,fontWeight:700,marginBottom:10}}>{error}</div>}
+          <div style={{display:"flex",gap:8}}>
+            <Btn variant="outline" onClick={onDecline} style={{flex:1}}>Recusar e sair</Btn>
+            <Btn variant="gold" disabled={!checked||busy} onClick={accept} style={{flex:2}}>
+              {busy ? <Loader2 size={15} style={{animation:"spin 1s linear infinite"}}/> : <ShieldCheck size={15}/>}
+              Aceitar e continuar
+            </Btn>
+          </div>
+        </div>
+      </Card>
+    </div>
   );
 }
 
