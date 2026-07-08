@@ -743,7 +743,7 @@ export default function App() {
     if (!SUPABASE_ENABLED || !supabase || !workspaceId) return;
     const { data: rows, error } = await supabase
       .from("finance_members")
-      .select("id,user_id,display_name,role,created_at")
+      .select("user_id,display_name,role,created_at")
       .eq("workspace_id", workspaceId)
       .order("created_at", { ascending:true });
     if (error) {
@@ -1684,7 +1684,7 @@ function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, l
           <div style={{fontFamily:F.display,fontSize:17,fontWeight:600}}>Membros</div>
         </div>
         {members.map(member=>(
-          <div key={member.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:`1px solid ${C.hairline}`}}>
+          <div key={member.user_id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:`1px solid ${C.hairline}`}}>
             <div style={{width:38,height:38,borderRadius:12,background:member.role==="admin"?C.greenPale:C.bgAlt,display:"flex",alignItems:"center",justifyContent:"center"}}>
               {member.role==="admin"?<ShieldCheck size={17} color={C.caramelDeep}/>:<UserRound size={17} color={C.inkSoft}/>}
             </div>
