@@ -1957,7 +1957,7 @@ function Dashboard({ tx, allTx, month, fixed, avatars, onNewAI, onNewNota, onNew
           <div style={{fontFamily:F.display,fontWeight:600,fontSize:16,display:"flex",gap:8,alignItems:"center"}}><Calendar size={16} color={C.caramelDeep}/> Calendário financeiro</div>
           <ChevronDown size={16} color={C.muted} style={{transform:calOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/>
         </div>
-        {calOpen&&<FinCalendar tx={tx} month={month}/>}
+        {calOpen&&<FinCalendar tx={tx} month={month} avatars={avatars}/>}
       </Card>
 
       {/* ── GASTOS FIXOS ── */}
@@ -1976,12 +1976,15 @@ function Dashboard({ tx, allTx, month, fixed, avatars, onNewAI, onNewNota, onNew
 }
 
 /* ── CALENDÁRIO ── */
-function FinCalendar({ tx, month }) {
+function FinCalendar({ tx, month, avatars }) {
+  const [selectedDay, setSelectedDay] = useState(null);
   const firstDay = new Date(month.y,month.m,1).getDay();
   const totalDays = new Date(month.y,month.m+1,0).getDate();
   const byDay = tx.filter(t=>t.tipo==="gasto").reduce((a,t)=>{const d=Number(t.data.slice(8,10));a[d]=(a[d]||0)+Number(t.valor);return a;},{});
   const maxVal = Math.max(...Object.values(byDay),1);
   const cells = Array.from({length:Math.ceil((firstDay+totalDays)/7)*7},(_,i)=>{const d=i-firstDay+1;return d>=1&&d<=totalDays?d:null;});
+  const dayTx = selectedDay ? tx.filter(t=>Number(t.data.slice(8,10))===selectedDay).sort((a,b)=>a.tipo===b.tipo?0:a.tipo==="ganho"?-1:1) : [];
+  const dayTotal = dayTx.filter(t=>t.tipo==="gasto").reduce((s,t)=>s+Number(t.valor),0);
   return (
     <div style={{marginTop:14}} onClick={e=>e.stopPropagation()}>
       <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,marginBottom:5}}>
@@ -1992,14 +1995,37 @@ function FinCalendar({ tx, month }) {
           const v = day?byDay[day]||0:0;
           const t = v>0?0.18+0.82*(v/maxVal):0;
           const bg = day ? (v>0 ? `rgba(143,90,43,${t})` : "rgba(84,60,32,0.04)") : "transparent";
+          const active = day && day===selectedDay;
           return (
-            <div key={i} style={{aspectRatio:"1",borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",background:bg,border:day?`1px solid ${C.hairline}`:"none"}}>
+            <button key={i} disabled={!day} onClick={()=>setSelectedDay(day===selectedDay?null:day)} style={{aspectRatio:"1",borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",background:bg,border:day?(active?`2px solid ${C.caramelDeep}`:`1px solid ${C.hairline}`):"none",cursor:day?"pointer":"default",padding:0,fontFamily:F.body}}>
               {day&&<div style={{fontSize:10,fontWeight:700,color:t>0.5?"#FFF8ED":C.muted,lineHeight:1}}>{day}</div>}
               {day&&v>0&&<div style={{fontSize:7.5,color:t>0.5?"rgba(255,248,237,0.85)":C.caramelDeep,fontWeight:600}}>{fmtShort(v).replace("R$ ","")}</div>}
-            </div>
+            </button>
           );
         })}
       </div>
+      {selectedDay&&(
+        <div style={{marginTop:12,background:"#FBF7EE",border:`1px solid ${C.border}`,borderRadius:14,padding:12}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:dayTx.length?8:0}}>
+            <span style={{fontWeight:700,fontSize:13}}>Dia {selectedDay}</span>
+            <span style={{fontFamily:F.display,fontWeight:600,color:C.caramelDeep,fontSize:14}}>{dayTotal>0?fmt(dayTotal):""}</span>
+          </div>
+          {dayTx.length===0
+            ? <div style={{fontSize:12.5,color:C.muted}}>Nenhum lançamento nesse dia.</div>
+            : dayTx.map(t=>(
+              <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderTop:`1px solid ${C.hairline}`}}>
+                <Avatar name={t.pessoa} avatars={avatars} size={22} ring={false}/>
+                <span style={{fontSize:15}}>{EMOJI[t.categoria]||"📦"}</span>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:12.5,fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.descricao||t.categoria}</div>
+                  <div style={{fontSize:10.5,color:C.muted}}>{t.categoria} · {t.pessoa}</div>
+                </div>
+                <span style={{fontSize:12.5,fontWeight:700,color:t.tipo==="ganho"?C.green:C.ink}}>{t.tipo==="ganho"?"+":"-"}{fmt(t.valor)}</span>
+              </div>
+            ))
+          }
+        </div>
+      )}
     </div>
   );
 }
