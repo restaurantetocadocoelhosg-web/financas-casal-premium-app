@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "2.5";
+const APP_VERSION = "2.6";
 // v-multi-tenant: nomes NAO sao mais fixos (cada workspace tem os seus, vindos de finance_members).
 // Cor por pessoa: hash estavel do nome -> mesma cor sempre, sem precisar saber a lista toda.
 const PESSOA_CASAL = "Casal";
@@ -313,29 +313,41 @@ function printReport(report) {
   w.document.close();
 }
 
-/* ── compressão de imagem (canvas) — square=true recorta um quadrado central (pra foto de perfil) ── */
-function compressImage(file, maxDim = 900, quality = 0.72, square = false) {
+/* ── compressão de imagem (canvas) — aceita File OU dataURL; square=true recorta quadrado central ── */
+function compressImage(input, maxDim = 900, quality = 0.72, square = false) {
+  const drawFrom = (src, resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      let sx = 0, sy = 0, sw = img.width, sh = img.height;
+      if (square) { const side = Math.min(img.width, img.height); sx = (img.width-side)/2; sy = (img.height-side)/2; sw = sh = side; }
+      let width, height;
+      if (square) { width = height = Math.min(maxDim, sw); }
+      else {
+        width = img.width; height = img.height;
+        if (width > maxDim || height > maxDim) { const r = Math.min(maxDim/width, maxDim/height); width = Math.round(width*r); height = Math.round(height*r); }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width; canvas.height = height;
+      canvas.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, width, height);
+      resolve(canvas.toDataURL("image/jpeg", quality));
+    };
+    img.onerror = reject;
+    img.src = src;
+  };
+  return new Promise((resolve, reject) => {
+    if (typeof input === "string") { drawFrom(input, resolve, reject); return; } // já é dataURL (recorte manual)
+    const reader = new FileReader();
+    reader.onload = (e) => drawFrom(e.target.result, resolve, reject);
+    reader.onerror = reject;
+    reader.readAsDataURL(input);
+  });
+}
+
+// Lê um File como dataURL (pra abrir no recortador antes de salvar).
+function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        let sx = 0, sy = 0, sw = img.width, sh = img.height;
-        if (square) { const side = Math.min(img.width, img.height); sx = (img.width-side)/2; sy = (img.height-side)/2; sw = sh = side; }
-        let width, height;
-        if (square) { width = height = Math.min(maxDim, sw); }
-        else {
-          width = img.width; height = img.height;
-          if (width > maxDim || height > maxDim) { const r = Math.min(maxDim/width, maxDim/height); width = Math.round(width*r); height = Math.round(height*r); }
-        }
-        const canvas = document.createElement("canvas");
-        canvas.width = width; canvas.height = height;
-        canvas.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, width, height);
-        resolve(canvas.toDataURL("image/jpeg", quality));
-      };
-      img.onerror = reject;
-      img.src = e.target.result;
-    };
+    reader.onload = (e) => resolve(e.target.result);
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
@@ -1296,18 +1308,19 @@ export default function App() {
     if (online) await supabase.from("finance_tx").delete().eq("id", id);
   },[patchData,online,wsId,showToast]);
 
-  const setAvatar = useCallback(async (name, file) => {
-    const small = await compressImage(file, 240, 0.82, true); // recorta quadrado central (foto de perfil)
+  const setAvatar = useCallback(async (name, imageInput) => {
+    // imageInput já vem recortado (dataURL) do CropModal; só reduz pra ficar leve.
+    const small = await compressImage(imageInput, 240, 0.82, false);
     patchData(d=>({...d, avatars:{...d.avatars,[name]:small}}));
     showToast(`Foto de ${name} atualizada ✓`);
-    if (online) await supabase.from("finance_avatars").upsert({workspace_id:wsId, person:name, image:small, updated_at:new Date().toISOString()}, {onConflict:"workspace_id,person"});
+    if (online) { const {error}=await supabase.from("finance_avatars").upsert({workspace_id:wsId, person:name, image:small, updated_at:new Date().toISOString()}, {onConflict:"workspace_id,person"}); if(error) showToast("⚠ Falha ao salvar a foto online"); }
   },[patchData,online,wsId,showToast]);
 
   const addGoal = useCallback(async (g)=>{
     const goal = {...g, id:uid(), saved:Number(g.saved||0), deposits:g.deposits||[]};
     patchData(d=>({...d, goals:[...d.goals, goal]}));
     showToast("Meta criada ✓");
-    if (online) await supabase.from("finance_goals").insert(goalToRow(goal, wsId));
+    if (online) { const {error}=await supabase.from("finance_goals").insert(goalToRow(goal, wsId)); if(error) showToast("⚠ Falha ao salvar a meta online"); }
   },[patchData,online,wsId,showToast]);
   const updateGoal = useCallback(async (g)=>{
     patchData(d=>({...d, goals:d.goals.map(x=>x.id===g.id?g:x)}));
@@ -1321,7 +1334,7 @@ export default function App() {
     const fixed = {...f, id:uid(), valor:Number(f.valor)||0, dia:Number(f.dia)||1, variavel:!!f.variavel, paidMonths:[]};
     patchData(d=>({...d, fixedExpenses:[...d.fixedExpenses, fixed]}));
     showToast("Conta fixa salva ✓");
-    if (online) await supabase.from("finance_fixed").insert(fixedToRow(fixed, wsId));
+    if (online) { const {error}=await supabase.from("finance_fixed").insert(fixedToRow(fixed, wsId)); if(error) showToast("⚠ Falha ao salvar a conta online"); }
   },[patchData,online,wsId,showToast]);
   const updateFixed = useCallback(async (f)=>{
     const fixed = {...f, valor:Number(f.valor)||0, dia:Number(f.dia)||1};
@@ -3359,12 +3372,76 @@ function SearchModal({ transactions, avatars, customCategories=[], onClose, onEd
   );
 }
 
+/* ── RECORTE MANUAL DE FOTO (arrastar + zoom, recorta quadrado) ── */
+function CropModal({ src, onConfirm, onCancel }) {
+  const VIEW = 280; // tamanho do quadrado de recorte na tela
+  const [nat, setNat] = useState({ w:0, h:0 });
+  const [zoom, setZoom] = useState(1);
+  const [off, setOff] = useState({ x:0, y:0 });
+  const drag = useRef(null);
+
+  // escala base pra imagem COBRIR o quadrado; zoom multiplica isso
+  const baseScale = nat.w && nat.h ? VIEW / Math.min(nat.w, nat.h) : 1;
+  const s = baseScale * zoom;
+  const dispW = nat.w * s, dispH = nat.h * s;
+
+  const clamp = (o) => ({
+    x: Math.min(0, Math.max(VIEW - dispW, o.x)),
+    y: Math.min(0, Math.max(VIEW - dispH, o.y)),
+  });
+
+  useEffect(()=>{ const img=new Image(); img.onload=()=>{ setNat({w:img.width,h:img.height}); }; img.src=src; },[src]);
+  useEffect(()=>{ if(nat.w){ setOff(o=>clamp({x:(VIEW-dispW)/2, y:(VIEW-dispH)/2})); } /* centraliza ao carregar/zoom */ // eslint-disable-next-line
+  },[nat.w, nat.h, zoom]);
+
+  const start = (x,y)=>{ drag.current={x,y,ox:off.x,oy:off.y}; };
+  const move = (x,y)=>{ if(!drag.current)return; setOff(clamp({x:drag.current.ox+(x-drag.current.x), y:drag.current.oy+(y-drag.current.y)})); };
+  const end = ()=>{ drag.current=null; };
+
+  const confirmar = () => {
+    // mapeia o quadrado visível de volta pra imagem original
+    const sx = (0 - off.x) / s, sy = (0 - off.y) / s, sd = VIEW / s;
+    const OUT = 300;
+    const canvas = document.createElement("canvas");
+    canvas.width = OUT; canvas.height = OUT;
+    const img = new Image();
+    img.onload = () => {
+      canvas.getContext("2d").drawImage(img, sx, sy, sd, sd, 0, 0, OUT, OUT);
+      onConfirm(canvas.toDataURL("image/jpeg", 0.82));
+    };
+    img.src = src;
+  };
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(24,18,12,0.85)",backdropFilter:"blur(6px)",zIndex:90,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+      <div className="su" style={{width:"100%",maxWidth:340,background:C.surface,borderRadius:24,padding:18,boxShadow:C.shadow}}>
+        <div style={{fontFamily:F.display,fontSize:18,fontWeight:600,marginBottom:4,textAlign:"center"}}>Ajuste a foto</div>
+        <div style={{fontSize:11.5,color:C.muted,textAlign:"center",marginBottom:12}}>Arraste pra posicionar e use a barra pra dar zoom</div>
+        <div
+          onMouseDown={e=>start(e.clientX,e.clientY)} onMouseMove={e=>move(e.clientX,e.clientY)} onMouseUp={end} onMouseLeave={end}
+          onTouchStart={e=>{const t=e.touches[0];start(t.clientX,t.clientY);}} onTouchMove={e=>{const t=e.touches[0];move(t.clientX,t.clientY);}} onTouchEnd={end}
+          style={{width:VIEW,height:VIEW,margin:"0 auto",borderRadius:"50%",overflow:"hidden",position:"relative",background:C.bgAlt,cursor:"grab",touchAction:"none",border:`2px solid ${C.border}`}}
+        >
+          {nat.w>0&&<img src={src} alt="recorte" draggable={false} style={{position:"absolute",left:off.x,top:off.y,width:dispW,height:dispH,maxWidth:"none",userSelect:"none",pointerEvents:"none"}}/>}
+        </div>
+        <input type="range" min="1" max="3" step="0.01" value={zoom} onChange={e=>setZoom(Number(e.target.value))} style={{width:"100%",margin:"14px 0",accentColor:C.caramelDeep}}/>
+        <div style={{display:"flex",gap:8}}>
+          <Btn variant="outline" onClick={onCancel} style={{flex:1}}>Cancelar</Btn>
+          <Btn variant="gold" onClick={confirmar} style={{flex:2}}><Check size={15}/> Usar foto</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ═══════════════════════════════════════════════
    PERFIS — FOTOS DO CASAL
 ═══════════════════════════════════════════════ */
 function ProfileSheet({ avatars, people=[], onSetAvatar, onClose }) {
   const pessoas = people.length>1 ? [...people, PESSOA_CASAL] : people;
   const refs = Object.fromEntries(pessoas.map(p=>[p,useRef(null)]));
+  const [cropFor, setCropFor] = useState(null); // {person, src} enquanto recorta
+  const pickFile = async (p, file) => { if(!file) return; try { const url = await fileToDataUrl(file); setCropFor({person:p, src:url}); } catch {} };
   return (
     <Sheet onClose={onClose} title="Fotos">
       <div style={{fontSize:13,color:C.muted,marginBottom:16,lineHeight:1.6}}>
@@ -3373,7 +3450,7 @@ function ProfileSheet({ avatars, people=[], onSetAvatar, onClose }) {
       <div style={{display:"grid",gridTemplateColumns:pessoas.length>=3?"1fr 1fr 1fr":"1fr 1fr",gap:12}}>
         {pessoas.map(p=>(
           <div key={p} style={{textAlign:"center"}}>
-            <input ref={refs[p]} type="file" accept="image/*" onChange={e=>{const f=e.target.files?.[0];if(f)onSetAvatar(p,f);}} style={{display:"none"}}/>
+            <input ref={refs[p]} type="file" accept="image/*" onChange={e=>{const f=e.target.files?.[0];pickFile(p,f);e.target.value="";}} style={{display:"none"}}/>
             <button onClick={()=>refs[p].current?.click()} style={{background:"none",border:"none",cursor:"pointer",padding:0}}>
               <div style={{position:"relative",display:"inline-block"}}>
                 <Avatar name={p} avatars={avatars} size={96}/>
@@ -3389,6 +3466,7 @@ function ProfileSheet({ avatars, people=[], onSetAvatar, onClose }) {
           </div>
         ))}
       </div>
+      {cropFor && <CropModal src={cropFor.src} onCancel={()=>setCropFor(null)} onConfirm={(dataUrl)=>{onSetAvatar(cropFor.person, dataUrl); setCropFor(null);}}/>}
     </Sheet>
   );
 }
