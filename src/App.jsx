@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "2.9";
+const APP_VERSION = "3.0";
 // Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
 const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
 // URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
@@ -668,6 +668,40 @@ function detectPayment(text) {
   if (clean.includes("transfer")) return "Transferência";
   if (clean.includes("pix")) return "Pix";
   return "Pix";
+}
+
+// ── IA DE VERDADE (Claude Haiku via n8n) — interpreta a frase e devolve o lançamento ──
+const IA_WEBHOOK = "https://n8n-production-806f.up.railway.app/webhook/prosperidade-ia";
+async function callHaiku(texto, { hoje, pessoas, categorias, pagamentos, sinonimos }) {
+  const ctrl = new AbortController();
+  const to = setTimeout(()=>ctrl.abort(), 25000);
+  try {
+    const r = await fetch(IA_WEBHOOK, {
+      method:"POST", headers:{ "content-type":"application/json" }, signal:ctrl.signal,
+      body: JSON.stringify({ texto, hoje, pessoas, categorias, pagamentos, sinonimos }),
+    });
+    const d = await r.json();
+    return (d && d.ok && d.tx) ? d.tx : null;
+  } catch { return null; }
+  finally { clearTimeout(to); }
+}
+// Ajusta o que a IA devolveu pro formato do app (valida categoria/pagamento/pessoa).
+function normalizeAiTx(ai, defaultPerson, people=[], customCategories=[]) {
+  const tipo = ai.tipo === "ganho" ? "ganho" : "gasto";
+  const cats = catsForTipo(tipo, customCategories);
+  const catMatch = cats.find(c=>normalize(c)===normalize(ai.categoria||"")) || cats.find(c=>normalize(ai.categoria||"").includes(normalize(c))) || (tipo==="ganho"?"Outros ganhos":"Outros");
+  const pag = PAYMENTS.find(p=>normalize(p)===normalize(ai.pagamento||"")) || "Pix";
+  const validPeople = people.length>1 ? [...people, PESSOA_CASAL] : people;
+  const pessoa = validPeople.find(p=>normalize(p)===normalize(ai.pessoa||"")) || defaultPerson;
+  const data = /^\d{4}-\d{2}-\d{2}$/.test(ai.data||"") ? ai.data : todayISO();
+  const superfluas = ["Delivery","Restaurante","Streaming","Lazer","Roupas","Presentes","Viagem"];
+  return {
+    tipo, valor:Number(ai.valor)||0, categoria:catMatch, pagamento:pag, pessoa, data,
+    descricao: String(ai.descricao||"").slice(0,70) || catMatch,
+    necessario: !superfluas.includes(catMatch),
+    _duvida: Array.isArray(ai.duvida) ? ai.duvida : [],
+    _confianca: Number(ai.confianca) || null,
+  };
 }
 
 function interpretFinancialText(text, defaultPerson, people=[]) {
@@ -3134,9 +3168,15 @@ function AISheet({ onClose, onConfirm, defaultPerson, people=[], avatars, custom
     if(!text.trim())return;
     setLoading(true); setError("");
     try{
-      const tx = interpretFinancialText(text, defaultPerson, people);
-      setPending(tx);
-    }catch{ setError('Não consegui interpretar. Ex.: "Gastei 50 reais no mercado no Pix".'); }
+      // 1) tenta a IA de verdade (Haiku) — entende data relativa, sinônimos, etc.
+      const categorias = [...new Set([...catsForTipo("gasto",customCategories), ...catsForTipo("ganho",customCategories)])];
+      const ai = await callHaiku(text, { hoje:todayISO(), pessoas:people, categorias, pagamentos:PAYMENTS, sinonimos:{} });
+      if (ai) { setPending(normalizeAiTx(ai, defaultPerson, people, customCategories)); }
+      else { setPending(interpretFinancialText(text, defaultPerson, people)); } // 2) fallback: regex local
+    }catch{
+      try { setPending(interpretFinancialText(text, defaultPerson, people)); }
+      catch { setError('Não consegui interpretar. Ex.: "Gastei 50 reais no mercado no Pix".'); }
+    }
     setLoading(false);
   };
 
@@ -3163,7 +3203,7 @@ function AISheet({ onClose, onConfirm, defaultPerson, people=[], avatars, custom
           </button>
         </>
       ):(
-        <TxForm tx={pending} avatars={avatars} people={people} customCategories={customCategories} onAddCategory={onAddCategory} onChange={setPending} onCancel={()=>setPending(null)} onSave={()=>onConfirm({...pending,valor:Number(pending.valor)})} saveLabel="Confirmar e salvar"/>
+        <TxForm tx={pending} avatars={avatars} people={people} customCategories={customCategories} onAddCategory={onAddCategory} onChange={setPending} onCancel={()=>setPending(null)} onSave={()=>{const{_duvida,_confianca,...limpo}=pending;onConfirm({...limpo,valor:Number(limpo.valor)});}} saveLabel="Confirmar e salvar"/>
       )}
     </Sheet>
   );
@@ -3295,8 +3335,20 @@ function TxForm({ tx, avatars, people=[], customCategories=[], onAddCategory, on
     setNovaCatOpen(false);
     setCatErr("");
   };
+  const duvida = Array.isArray(tx._duvida) ? tx._duvida : [];
+  const nomeCampo = { categoria:"categoria", valor:"valor", data:"data", pagamento:"pagamento", pessoa:"quem foi" };
   return (
     <>
+      {tx._confianca!=null && (
+        <div style={{display:"flex",gap:8,alignItems:"flex-start",background:duvida.length?C.amberPale:C.greenPale,border:`1px solid ${duvida.length?"rgba(201,150,46,0.25)":"rgba(15,118,110,0.16)"}`,borderRadius:12,padding:"9px 12px",marginBottom:12}}>
+          <BrainCircuit size={15} color={duvida.length?C.amber:C.green} style={{flexShrink:0,marginTop:1}}/>
+          <span style={{fontSize:12,lineHeight:1.4,color:C.inkSoft}}>
+            {duvida.length
+              ? <>A IA entendeu, mas <b>confira {duvida.map(d=>nomeCampo[d]||d).join(", ")}</b> antes de salvar.</>
+              : <>A IA entendeu com <b>{tx._confianca}% de certeza</b>. Confira e salve. ✅</>}
+          </span>
+        </div>
+      )}
       <div style={{display:"flex",gap:8,marginBottom:14}}>
         {[["gasto","Gasto"],["ganho","Ganho"]].map(([tp,lb])=>(
           <button key={tp} onClick={()=>s("tipo",tp)} style={{flex:1,padding:11,borderRadius:14,border:`1.5px solid ${tx.tipo===tp?C.ink:C.border}`,background:tx.tipo===tp?C.ink:"#FBF7EE",color:tx.tipo===tp?"#F6F1E7":C.muted,fontWeight:800,fontSize:14,cursor:"pointer",fontFamily:F.body}}>{lb}</button>
