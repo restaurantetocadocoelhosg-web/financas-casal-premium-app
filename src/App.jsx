@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "2.0";
+const APP_VERSION = "2.1";
 // v-multi-tenant: nomes NAO sao mais fixos (cada workspace tem os seus, vindos de finance_members).
 // Cor por pessoa: hash estavel do nome -> mesma cor sempre, sem precisar saber a lista toda.
 const PESSOA_CASAL = "Casal";
@@ -753,36 +753,32 @@ function GlobalStyles() {
   );
 }
 
-// Símbolo único do Prosperidade: linha de crescimento saindo de uma moeda e virando broto.
-function BrandMark({ size=64 }) {
+// Símbolo do Prosperidade: seta de crescimento simples num selo com degradê.
+function BrandMark({ size=48 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 64 64" style={{display:"block"}} aria-label="Prosperidade">
       <defs>
         <linearGradient id="brandg" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#8F5A2B"/>
-          <stop offset="1" stopColor="#D3A23C"/>
+          <stop offset="0" stopColor="#9A5F2B"/>
+          <stop offset="1" stopColor="#CF9E39"/>
         </linearGradient>
       </defs>
-      <rect width="64" height="64" rx="16" fill="url(#brandg)"/>
-      <path d="M14 46 L26 33 L35 40 L48 24" fill="none" stroke="#FFF6E6" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round"/>
-      <circle cx="14" cy="46" r="4.2" fill="#FFF6E6"/>
-      <path d="M48 24 C 50 14, 58 12, 60 8 C 52 9, 45.5 15, 48 24 Z" fill="#7CC49B"/>
+      <rect width="64" height="64" rx="18" fill="url(#brandg)"/>
+      <path d="M17 41 L28 30 L37 37 L47 23" fill="none" stroke="#FFF6E6" strokeWidth="5.5" strokeLinecap="round" strokeLinejoin="round"/>
+      <path d="M39 23 L47 23 L47 31" fill="none" stroke="#FFF6E6" strokeWidth="5.5" strokeLinecap="round" strokeLinejoin="round"/>
     </svg>
   );
 }
 
 function LoadingScreen({ label="Prosperidade", status }) {
   return (
-    <div style={{minHeight:"100vh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16,padding:20,textAlign:"center"}}>
+    <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:12,padding:20,textAlign:"center"}}>
       <GlobalStyles/>
-      <div style={{boxShadow:"0 18px 40px rgba(143,90,43,0.28)",borderRadius:22,animation:"slideUp .4s ease"}}><BrandMark size={84}/></div>
-      <div>
-        <div style={{fontFamily:F.display,fontSize:30,fontWeight:600,color:C.caramelDeep,letterSpacing:0.5}}>{label}</div>
-        <div style={{fontSize:12,color:C.muted,marginTop:2,fontStyle:"italic"}}>Metas em dia = prosperidade certa</div>
-      </div>
-      <Loader2 size={20} color={C.gold} style={{animation:"spin 1s linear infinite"}}/>
-      {status&&<div style={{fontSize:12.5,color:C.muted,maxWidth:320,lineHeight:1.45}}>{status}</div>}
-      <div style={{position:"fixed",bottom:18,fontSize:11,color:C.faint,fontWeight:700,letterSpacing:0.5}}>v{APP_VERSION}</div>
+      <BrandMark size={52}/>
+      <div style={{fontFamily:F.display,fontSize:22,fontWeight:600,color:C.caramelDeep}}>{label}</div>
+      <Loader2 size={18} color={C.gold} style={{animation:"spin 1s linear infinite"}}/>
+      {status&&<div style={{fontSize:12,color:C.muted,maxWidth:300,lineHeight:1.4}}>{status}</div>}
+      <div style={{position:"fixed",bottom:16,fontSize:10.5,color:C.faint,fontWeight:700}}>v{APP_VERSION}</div>
     </div>
   );
 }
@@ -979,53 +975,31 @@ export default function App() {
     };
   },[loaded, loadOnlineWorkspace]);
 
-  // Auto-atualiza a lista de membros do workspace: assim que alguém entra por
-  // convite, o nome dela aparece pra quem já estava logado, sem precisar dar F5.
-  useEffect(()=>{
-    if (!SUPABASE_ENABLED || !supabase || !onlineWorkspace?.id) return undefined;
-    const wsId = onlineWorkspace.id;
-    const tick = () => { if (document.visibilityState === "visible") loadOnlineMembers(wsId); };
-    const interval = setInterval(tick, 20000);
-    document.addEventListener("visibilitychange", tick);
-    return () => {
-      clearInterval(interval);
-      document.removeEventListener("visibilitychange", tick);
-    };
-  },[onlineWorkspace?.id, loadOnlineMembers]);
-
-  // REALTIME: escuta mudanças nas tabelas do workspace e reflete na tela ao vivo
-  // (o outro aparelho vê o lançamento/meta na hora, sem F5). Idempotente por id.
+  // Atualização leve: quando o app volta a ficar visível (você troca de aba do
+  // navegador ou reabre), recarrega membros + dados do servidor. Sem timer nem
+  // WebSocket rodando o tempo todo (evita travar em celular). Cada ação continua
+  // salvando por-linha na hora, então nada se perde.
   useEffect(()=>{
     if (!SUPABASE_ENABLED || !supabase || !onlineWorkspace?.id) return undefined;
     const ws = onlineWorkspace.id;
-    const applyArr = (key, payload, mapper) => {
-      setData(prev=>{
-        let arr = prev[key] || [];
-        if (payload.eventType==="DELETE") {
-          const oldId = payload.old?.id;
-          arr = arr.filter(x=>x.id!==oldId);
-        } else {
-          const item = mapper(payload.new);
-          arr = arr.some(x=>x.id===item.id) ? arr.map(x=>x.id===item.id?item:x) : [item, ...arr];
-        }
-        const next = {...prev, [key]:arr};
-        persistAll(next);
-        return next;
-      });
+    let running = false;
+    const refresh = async () => {
+      if (document.visibilityState !== "visible" || running) return;
+      running = true;
+      try {
+        await loadOnlineMembers(ws);
+        const fresh = await loadOnlineData(ws);
+        setData(prev=>{ persistAll(fresh); return fresh; });
+      } catch {}
+      running = false;
     };
-    const reloadSlice = async () => {
-      const fresh = await loadOnlineData(ws);
-      setData(prev=>{ const next={...prev, customCategories:fresh.customCategories, avatars:fresh.avatars}; persistAll(next); return next; });
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
     };
-    const ch = supabase.channel(`ws-data-${ws}`)
-      .on("postgres_changes", {event:"*",schema:"public",table:"finance_tx",filter:`workspace_id=eq.${ws}`}, p=>applyArr("transactions",p,rowToTx))
-      .on("postgres_changes", {event:"*",schema:"public",table:"finance_goals",filter:`workspace_id=eq.${ws}`}, p=>applyArr("goals",p,rowToGoal))
-      .on("postgres_changes", {event:"*",schema:"public",table:"finance_fixed",filter:`workspace_id=eq.${ws}`}, p=>applyArr("fixedExpenses",p,rowToFixed))
-      .on("postgres_changes", {event:"*",schema:"public",table:"finance_categories",filter:`workspace_id=eq.${ws}`}, reloadSlice)
-      .on("postgres_changes", {event:"*",schema:"public",table:"finance_avatars",filter:`workspace_id=eq.${ws}`}, reloadSlice)
-      .subscribe();
-    return () => { supabase.removeChannel(ch); };
-  },[onlineWorkspace?.id, loadOnlineData]);
+  },[onlineWorkspace?.id, loadOnlineMembers, loadOnlineData]);
 
   const currentUser = useMemo(
     ()=>auth.users.find(u=>u.id===session?.userId) || null,
@@ -1432,13 +1406,10 @@ export default function App() {
       <div style={{maxWidth:480,margin:"0 auto",padding:"22px 18px"}}>
         {/* ── HEADER ── */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}}>
-          <div style={{display:"flex",alignItems:"center",gap:11}}>
-            <BrandMark size={40}/>
-            <div>
-              <Eyebrow>{greeting()}</Eyebrow>
-              <div style={{fontFamily:F.display,fontSize:26,fontWeight:600,letterSpacing:0,lineHeight:1.1}}>
-                <em style={{color:C.caramelDeep}}>Prosperidade</em>
-              </div>
+          <div>
+            <Eyebrow>{greeting()}</Eyebrow>
+            <div style={{fontFamily:F.display,fontSize:26,fontWeight:600,letterSpacing:0,lineHeight:1.1}}>
+              <em style={{color:C.caramelDeep}}>Prosperidade</em>
             </div>
           </div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
@@ -1622,13 +1593,13 @@ function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, syncSta
     <div style={{minHeight:"100vh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
       <GlobalStyles/>
       <Card style={{width:"100%",maxWidth:430,padding:24}}>
-        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:18}}>
-          <div style={{boxShadow:"0 8px 20px rgba(143,90,43,0.25)",borderRadius:14}}><BrandMark size={48}/></div>
+        <div style={{display:"flex",alignItems:"center",gap:11,marginBottom:20}}>
+          <BrandMark size={42}/>
           <div style={{flex:1}}>
-            <div style={{fontFamily:F.display,fontSize:24,fontWeight:600,lineHeight:1.05}}>Prosperidade</div>
-            <div style={{fontSize:11.5,color:C.muted,fontWeight:600,letterSpacing:0.3,marginTop:2}}>Metas em dia = Prosperidade certa</div>
+            <div style={{fontFamily:F.display,fontSize:22,fontWeight:600,lineHeight:1.05}}>Prosperidade</div>
+            <div style={{fontSize:10,color:C.faint,fontWeight:600,marginTop:1}}>Metas em dia = prosperidade certa</div>
           </div>
-          <span style={{fontSize:10.5,color:C.faint,fontWeight:800,letterSpacing:0.5,alignSelf:"flex-start"}}>v{APP_VERSION}</span>
+          <span style={{fontSize:10,color:C.faint,fontWeight:800,alignSelf:"flex-start"}}>v{APP_VERSION}</span>
         </div>
 
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:16}}>
