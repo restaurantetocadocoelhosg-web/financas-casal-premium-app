@@ -55,11 +55,28 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "3.4";
+const APP_VERSION = "3.5";
 // Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
 const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
 // URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
 const APP_URL = "https://restaurantetocadocoelhosg-web.github.io/financas-casal-premium-app/";
+
+// Traduz erros do Supabase Auth pra mensagens claras em PT (sem jargão em inglês).
+function friendlyAuthError(error) {
+  const code = String(error?.code || error?.error_code || "");
+  const m = String(error?.message || "");
+  if (code === "over_email_send_rate_limit" || /rate limit/i.test(m))
+    return "Muitos cadastros em pouco tempo — o envio de e-mail está no limite por ~1 hora. Espere um pouco e tente de novo. (Para uso real, configure um provedor de e-mail/SMTP no Supabase.)";
+  if (code === "email_address_invalid" || (/invalid/i.test(m) && /email/i.test(m)))
+    return "Esse e-mail parece inválido. Confira e tente de novo.";
+  if (code === "user_already_exists" || /already reg|already been|already exists/i.test(m))
+    return "Esse e-mail já tem conta. Tente entrar, ou use “esqueci a senha”.";
+  if (code === "weak_password" || /password/i.test(m))
+    return "Senha muito curta. Use pelo menos 6 caracteres.";
+  if (code === "email_not_confirmed" || /not confirm/i.test(m))
+    return "Conta ainda não confirmada. Digite o código que enviamos por e-mail.";
+  return m || "Não consegui completar agora. Tente de novo.";
+}
 // v-multi-tenant: nomes NAO sao mais fixos (cada workspace tem os seus, vindos de finance_members).
 // Cor por pessoa: hash estavel do nome -> mesma cor sempre, sem precisar saber a lista toda.
 const PESSOA_CASAL = "Casal";
@@ -1291,23 +1308,30 @@ export default function App() {
     }
     if (password !== confirm) return { ok:false, message:"As senhas não conferem." };
     setOnlineLoading(true);
-    const { data: created, error } = await supabase.auth.signUp({
-      email: cleanEmail,
-      password,
-      options: {
-        data:{ display_name:displayName, idade:String(idade||"").trim(), telefone:String(telefone||"").trim() },
-        emailRedirectTo: APP_URL, // link de confirmação volta pro app, não localhost
-      },
-    });
-    if (error) {
+    try {
+      // Timeout de segurança: se o servidor de e-mail travar, não deixamos a tela girando pra sempre.
+      const signUpPromise = supabase.auth.signUp({
+        email: cleanEmail,
+        password,
+        options: {
+          data:{ display_name:displayName, idade:String(idade||"").trim(), telefone:String(telefone||"").trim() },
+          emailRedirectTo: APP_URL, // link de confirmação volta pro app, não localhost
+        },
+      });
+      const timeout = new Promise((_,rej)=>setTimeout(()=>rej(new Error("__timeout__")), 20000));
+      const { data: created, error } = await Promise.race([signUpPromise, timeout]);
       setOnlineLoading(false);
-      return { ok:false, message:error.message };
-    }
-    if (!created.session) {
+      if (error) return { ok:false, message: friendlyAuthError(error) };
+      if (!created.session) {
+        return { ok:true, needsConfirmation:true, email:cleanEmail, message:`Enviamos um código de 6 dígitos para ${cleanEmail}. Digite abaixo para confirmar.` };
+      }
+      return { ok:true };
+    } catch (e) {
       setOnlineLoading(false);
-      return { ok:true, needsConfirmation:true, email:cleanEmail, message:`Enviamos um código de 6 dígitos para ${cleanEmail}. Digite abaixo para confirmar.` };
+      if (String(e?.message) === "__timeout__")
+        return { ok:false, message:"O envio de e-mail demorou demais. A conta pode já ter sido criada — tente “Já tenho conta / entrar”, ou aguarde 1 minuto e tente de novo." };
+      return { ok:false, message:"Falha de conexão ao criar a conta. Confira a internet e tente de novo." };
     }
-    return { ok:true };
   },[]);
 
   const onlineVerifyCode = useCallback(async ({ email, token }) => {
@@ -1328,7 +1352,7 @@ export default function App() {
     if (!supabase) return { ok:false, message:"Supabase não configurado." };
     const cleanEmail = String(email||"").trim().toLowerCase();
     const { error } = await supabase.auth.resend({ type:"signup", email:cleanEmail });
-    if (error) return { ok:false, message:error.message };
+    if (error) return { ok:false, message:friendlyAuthError(error) };
     return { ok:true, message:`Novo código enviado para ${cleanEmail}.` };
   },[]);
 
