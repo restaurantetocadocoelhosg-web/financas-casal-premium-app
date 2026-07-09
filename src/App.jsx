@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "2.8";
+const APP_VERSION = "2.9";
 // Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
 const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
 // URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
@@ -127,16 +127,25 @@ const groupSum = (items, keyFn) => Object.entries(items.reduce((acc,item)=>{
   return acc;
 },{})).map(([name,value])=>({name,value})).sort((a,b)=>b.value-a.value);
 
-function downloadBlob(filename, content, type) {
+async function downloadBlob(filename, content, type) {
   const blob = content instanceof Blob ? content : new Blob([content], { type });
+  // Celular: usa o "Compartilhar" nativo (salvar em Arquivos, enviar por WhatsApp/e-mail…),
+  // porque o download por link (a.download) é ignorado por iOS/Android e "não faz nada".
+  try {
+    const file = new File([blob], filename, { type });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: filename }); } catch {}
+      return;
+    }
+  } catch {}
+  // Desktop / fallback: link de download normal
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
+  a.href = url; a.download = filename; a.target = "_blank"; a.rel = "noopener";
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(url);
+  setTimeout(()=>URL.revokeObjectURL(url), 4000);
 }
 
 const htmlEscape = (value) => String(value ?? "")
@@ -2939,8 +2948,8 @@ function TxRow({ t, avatars, customCategories=[], onDelete, onEdit, onViewPhoto 
       <div style={{fontFamily:F.display,fontSize:15,fontWeight:600,color:t.tipo==="ganho"?C.green:C.ink,flexShrink:0}}>
         {t.tipo==="ganho"?"+":"−"}{fmtShort(t.valor)}
       </div>
-      {onEdit&&<button onClick={()=>onEdit(t)} style={{background:"none",border:"none",color:C.faint,cursor:"pointer",padding:3}}><Pencil size={14}/></button>}
-      {onDelete&&<button onClick={()=>{if(window.confirm("Excluir este lançamento?"))onDelete(t.id)}} style={{background:"none",border:"none",color:C.faint,cursor:"pointer",padding:3}}><Trash2 size={14}/></button>}
+      {onEdit&&<button title="Editar" aria-label="Editar lançamento" onClick={()=>onEdit(t)} style={{background:"none",border:"none",color:C.faint,cursor:"pointer",padding:3}}><Pencil size={14}/></button>}
+      {onDelete&&<button title="Excluir" aria-label="Excluir lançamento" onClick={()=>{if(window.confirm("Excluir este lançamento?"))onDelete(t.id)}} style={{background:"none",border:"none",color:C.faint,cursor:"pointer",padding:3}}><Trash2 size={14}/></button>}
     </div>
   );
 }
