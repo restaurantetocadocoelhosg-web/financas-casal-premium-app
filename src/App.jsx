@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "2.4";
+const APP_VERSION = "2.5";
 // v-multi-tenant: nomes NAO sao mais fixos (cada workspace tem os seus, vindos de finance_members).
 // Cor por pessoa: hash estavel do nome -> mesma cor sempre, sem precisar saber a lista toda.
 const PESSOA_CASAL = "Casal";
@@ -313,21 +313,24 @@ function printReport(report) {
   w.document.close();
 }
 
-/* ── compressão de imagem (canvas) ── */
-function compressImage(file, maxDim = 900, quality = 0.72) {
+/* ── compressão de imagem (canvas) — square=true recorta um quadrado central (pra foto de perfil) ── */
+function compressImage(file, maxDim = 900, quality = 0.72, square = false) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
       const img = new Image();
       img.onload = () => {
-        let { width, height } = img;
-        if (width > maxDim || height > maxDim) {
-          const r = Math.min(maxDim/width, maxDim/height);
-          width = Math.round(width*r); height = Math.round(height*r);
+        let sx = 0, sy = 0, sw = img.width, sh = img.height;
+        if (square) { const side = Math.min(img.width, img.height); sx = (img.width-side)/2; sy = (img.height-side)/2; sw = sh = side; }
+        let width, height;
+        if (square) { width = height = Math.min(maxDim, sw); }
+        else {
+          width = img.width; height = img.height;
+          if (width > maxDim || height > maxDim) { const r = Math.min(maxDim/width, maxDim/height); width = Math.round(width*r); height = Math.round(height*r); }
         }
         const canvas = document.createElement("canvas");
         canvas.width = width; canvas.height = height;
-        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        canvas.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, width, height);
         resolve(canvas.toDataURL("image/jpeg", quality));
       };
       img.onerror = reject;
@@ -380,6 +383,7 @@ const MOTIVA_FRASES = [
 ];
 const fraseMotivacional = () => MOTIVA_FRASES[Math.floor(Math.random()*MOTIVA_FRASES.length)];
 const BILL_ALERTS_KEY = "prosperidade-bill-alerts"; // preferência local (ligar/desligar avisos)
+const BILLS_SNOOZE_KEY = "prosperidade-bills-snooze"; // data em que o alerta foi adiado ("ver depois")
 
 // Junta categorias base + as criadas pelo admin (custom vêm antes de "Outros").
 function catsForTipo(tipo, custom=[]) {
@@ -818,7 +822,9 @@ export default function App() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [photoView, setPhotoView] = useState(null);
-  const [billsAlertDismissed, setBillsAlertDismissed] = useState(false);
+  // Alerta de contas: fica "adiado" pelo resto do DIA quando clica "Ver depois" (não reaparece a cada abertura).
+  const [billsAlertDismissed, setBillsAlertDismissed] = useState(()=>{ try { return localStorage.getItem(BILLS_SNOOZE_KEY) === todayISO(); } catch { return false; } });
+  const dismissBillsAlert = useCallback(()=>{ setBillsAlertDismissed(true); try { localStorage.setItem(BILLS_SNOOZE_KEY, todayISO()); } catch {} },[]);
   const [billAlertsEnabled, setBillAlertsEnabled] = useState(()=>{ try { return localStorage.getItem(BILL_ALERTS_KEY) !== "off"; } catch { return true; } });
   const toggleBillAlerts = useCallback((on)=>{ setBillAlertsEnabled(on); try { localStorage.setItem(BILL_ALERTS_KEY, on?"on":"off"); } catch {} },[]);
   const [toast, setToast] = useState(null);
@@ -832,6 +838,7 @@ export default function App() {
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const [termsAccepted, setTermsAccepted] = useState(null); // null=verificando, true/false depois
   const localSeedRef = useRef(DEFAULT_DATA);
+  const lastWriteRef = useRef(0); // marca a última gravação local (guarda contra o refresh apagar dado recém-criado)
 
   const showToast = useCallback((msg)=>{ setToast(msg); setTimeout(()=>setToast(null),2600); },[]);
   const persistAuthState = useCallback((next)=>{ setAuth(next); persistAuth(next); },[]);
@@ -929,6 +936,7 @@ export default function App() {
 
   // Grava só local (state + cache do aparelho). O servidor é atualizado por-linha nos handlers.
   const patchData = useCallback((updater)=>{
+    lastWriteRef.current = Date.now();
     setData(prev=>{
       const next = sanitizeData(typeof updater==="function" ? updater(prev) : updater);
       persistAll(next);
@@ -1005,6 +1013,8 @@ export default function App() {
     let running = false;
     const refresh = async () => {
       if (document.visibilityState !== "visible" || running) return;
+      // Não sobrescreve se acabei de gravar algo (evita apagar dado recém-criado antes do servidor confirmar).
+      if (Date.now() - lastWriteRef.current < 8000) return;
       running = true;
       try {
         await loadOnlineMembers(ws);
@@ -1287,7 +1297,7 @@ export default function App() {
   },[patchData,online,wsId,showToast]);
 
   const setAvatar = useCallback(async (name, file) => {
-    const small = await compressImage(file, 220, 0.8);
+    const small = await compressImage(file, 240, 0.82, true); // recorta quadrado central (foto de perfil)
     patchData(d=>({...d, avatars:{...d.avatars,[name]:small}}));
     showToast(`Foto de ${name} atualizada ✓`);
     if (online) await supabase.from("finance_avatars").upsert({workspace_id:wsId, person:name, image:small, updated_at:new Date().toISOString()}, {onConflict:"workspace_id,person"});
@@ -1359,7 +1369,10 @@ export default function App() {
     const nova = { name:clean, emoji:(emoji||"📦").trim()||"📦", tipo:tipo==="ganho"?"ganho":"gasto" };
     patchData(d=>({...d, customCategories:[...d.customCategories, nova]}));
     showToast("Categoria criada ✓");
-    if (online) supabase.from("finance_categories").insert({workspace_id:wsId, name:nova.name, emoji:nova.emoji, tipo:nova.tipo});
+    if (online) (async()=>{
+      const { error } = await supabase.from("finance_categories").upsert({workspace_id:wsId, name:nova.name, emoji:nova.emoji, tipo:nova.tipo}, {onConflict:"workspace_id,name,tipo"});
+      if (error) showToast("⚠ Falha ao salvar a categoria — tente de novo");
+    })();
     return { ok:true };
   },[data.customCategories,patchData,online,wsId,showToast]);
 
@@ -1378,16 +1391,17 @@ export default function App() {
       transactions: nextName!==oldName ? d.transactions.map(t=>t.categoria===oldName ? {...t, categoria:nextName} : t) : d.transactions,
     }));
     showToast("Categoria atualizada ✓");
-    if (online) {
+    if (online) (async()=>{
       if (nextName!==oldName) {
         // PK muda com o nome: apaga a linha antiga e cria a nova, e renomeia nos lançamentos.
-        supabase.from("finance_categories").delete().eq("workspace_id",wsId).eq("name",oldName).eq("tipo",tipo)
-          .then(()=>supabase.from("finance_categories").insert({workspace_id:wsId, name:nextName, emoji:novoEmoji, tipo}));
-        supabase.from("finance_tx").update({categoria:nextName}).eq("workspace_id",wsId).eq("categoria",oldName);
+        await supabase.from("finance_categories").delete().eq("workspace_id",wsId).eq("name",oldName).eq("tipo",tipo);
+        const { error } = await supabase.from("finance_categories").upsert({workspace_id:wsId, name:nextName, emoji:novoEmoji, tipo}, {onConflict:"workspace_id,name,tipo"});
+        await supabase.from("finance_tx").update({categoria:nextName}).eq("workspace_id",wsId).eq("categoria",oldName);
+        if (error) showToast("⚠ Falha ao salvar a categoria — tente de novo");
       } else {
-        supabase.from("finance_categories").update({emoji:novoEmoji}).eq("workspace_id",wsId).eq("name",oldName).eq("tipo",tipo);
+        await supabase.from("finance_categories").update({emoji:novoEmoji}).eq("workspace_id",wsId).eq("name",oldName).eq("tipo",tipo);
       }
-    }
+    })();
     return { ok:true };
   },[data.customCategories,patchData,online,wsId,showToast]);
 
@@ -1546,7 +1560,7 @@ export default function App() {
       {profileOpen&& <ProfileSheet avatars={data.avatars} people={people} onSetAvatar={setAvatar} onClose={()=>setProfileOpen(false)}/>}
       {reportOpen && <ReportSheet data={data} month={month} person={person} onClose={()=>setReportOpen(false)} onImport={importData}/>}
       {photoView  && <PhotoViewer txId={photoView} onClose={()=>setPhotoView(null)}/>}
-      {!billsAlertDismissed && billsDue.length>0 && <BillsAlert bills={billsDue} goalNudge={goalNudge} customCategories={data.customCategories} onPaid={toggleFixedPaid} onClose={()=>setBillsAlertDismissed(true)}/>}
+      {!billsAlertDismissed && billsDue.length>0 && <BillsAlert bills={billsDue} goalNudge={goalNudge} customCategories={data.customCategories} onPaid={toggleFixedPaid} onClose={dismissBillsAlert}/>}
 
       {toast && (
         <div style={{position:"fixed",bottom:104,left:"50%",transform:"translateX(-50%)",background:C.ink,color:C.goldPale,padding:"11px 22px",borderRadius:999,fontSize:13,fontWeight:700,zIndex:99,whiteSpace:"nowrap",boxShadow:"0 6px 24px rgba(0,0,0,0.25)",animation:"toastIn .3s ease",fontFamily:F.body}}>
@@ -2980,7 +2994,7 @@ function NotaSheet({ onClose, onConfirm, defaultPerson, people=[], avatars, cust
     const f = e.target.files?.[0];
     if(!f) return;
     setError("");
-    try{ setFoto(await compressImage(f, 1280, 0.8)); }
+    try{ setFoto(await compressImage(f, 1000, 0.6)); }
     catch{ setError("Não consegui carregar a imagem."); }
   };
 
@@ -3052,7 +3066,7 @@ function EditSheet({ tx, avatars, people=[], customCategories=[], onAddCategory,
   const pick = async (e) => {
     const f = e.target.files?.[0];
     if(!f) return;
-    setFoto(await compressImage(f, 1100, 0.75));
+    setFoto(await compressImage(f, 1000, 0.6));
     setFotoRemovida(false);
   };
   const fotoAtual = foto || (!fotoRemovida && fotoExistente);
