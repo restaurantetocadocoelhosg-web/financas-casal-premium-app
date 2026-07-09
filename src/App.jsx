@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "2.1";
+const APP_VERSION = "2.2";
 // v-multi-tenant: nomes NAO sao mais fixos (cada workspace tem os seus, vindos de finance_members).
 // Cor por pessoa: hash estavel do nome -> mesma cor sempre, sem precisar saber a lista toda.
 const PESSOA_CASAL = "Casal";
@@ -1487,7 +1487,7 @@ export default function App() {
       {aiOpen     && <AISheet defaultPerson={person==="Todos"?people[0]:person} people={people} avatars={data.avatars} customCategories={data.customCategories} onAddCategory={addCategory} onClose={()=>setAiOpen(false)} onConfirm={(tx)=>{addTx(tx);setAiOpen(false);}} onOpenNota={()=>{setAiOpen(false);setNotaOpen(true);}}/>}
       {notaOpen   && <NotaSheet defaultPerson={person==="Todos"?people[0]:person} people={people} avatars={data.avatars} customCategories={data.customCategories} onAddCategory={addCategory} onClose={()=>setNotaOpen(false)} onConfirm={(tx,foto)=>{addTx(tx,foto);setNotaOpen(false);}}/>}
       {editing    && <EditSheet tx={editing} avatars={data.avatars} people={people} customCategories={data.customCategories} onAddCategory={addCategory} onClose={()=>setEditing(null)} onSave={(tx,foto,fotoRemovida)=>{tx.id?updateTx(tx,foto,fotoRemovida):addTx(tx,foto);setEditing(null);}}/>}
-      {searchOpen && <SearchModal transactions={data.transactions} avatars={data.avatars} onClose={()=>setSearchOpen(false)} onEdit={t=>{setSearchOpen(false);setEditing(t);}} onDelete={deleteTx} onViewPhoto={setPhotoView}/>}
+      {searchOpen && <SearchModal transactions={data.transactions} avatars={data.avatars} customCategories={data.customCategories} onClose={()=>setSearchOpen(false)} onEdit={t=>{setSearchOpen(false);setEditing(t);}} onDelete={deleteTx} onViewPhoto={setPhotoView}/>}
       {profileOpen&& <ProfileSheet avatars={data.avatars} people={people} onSetAvatar={setAvatar} onClose={()=>setProfileOpen(false)}/>}
       {reportOpen && <ReportSheet data={data} month={month} person={person} onClose={()=>setReportOpen(false)} onImport={importData}/>}
       {photoView  && <PhotoViewer txId={photoView} onClose={()=>setPhotoView(null)}/>}
@@ -2410,7 +2410,7 @@ function Dashboard({ tx, allTx, month, fixed, avatars, people=[], customCategori
           <div style={{fontFamily:F.display,fontWeight:600,fontSize:16,display:"flex",gap:8,alignItems:"center"}}><Calendar size={16} color={C.caramelDeep}/> Calendário financeiro</div>
           <ChevronDown size={16} color={C.muted} style={{transform:calOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/>
         </div>
-        {calOpen&&<FinCalendar tx={tx} month={month} avatars={avatars}/>}
+        {calOpen&&<FinCalendar tx={tx} month={month} avatars={avatars} customCategories={customCategories}/>}
       </Card>
 
       {/* ── GASTOS FIXOS ── */}
@@ -2429,7 +2429,7 @@ function Dashboard({ tx, allTx, month, fixed, avatars, people=[], customCategori
 }
 
 /* ── CALENDÁRIO ── */
-function FinCalendar({ tx, month, avatars }) {
+function FinCalendar({ tx, month, avatars, customCategories=[] }) {
   const [selectedDay, setSelectedDay] = useState(null);
   const firstDay = new Date(month.y,month.m,1).getDay();
   const totalDays = new Date(month.y,month.m+1,0).getDate();
@@ -2560,7 +2560,7 @@ function Extrato({ tx, avatars, customCategories=[], onDelete, onEdit, onViewPho
             <span style={{fontFamily:F.display,fontSize:13,fontWeight:600,color:C.inkSoft}}>{fmt(groups[d].filter(t=>t.tipo==="gasto").reduce((s,t)=>s+Number(t.valor),0))}</span>
           </div>
           <Card style={{padding:"4px 16px"}}>
-            {groups[d].map(t=><TxRow key={t.id} t={t} avatars={avatars} onDelete={onDelete} onEdit={onEdit} onViewPhoto={onViewPhoto}/>)}
+            {groups[d].map(t=><TxRow key={t.id} t={t} avatars={avatars} customCategories={customCategories} onDelete={onDelete} onEdit={onEdit} onViewPhoto={onViewPhoto}/>)}
           </Card>
         </div>
       ))}
@@ -2569,7 +2569,7 @@ function Extrato({ tx, avatars, customCategories=[], onDelete, onEdit, onViewPho
 }
 
 /* ── TX ROW (com avatar da pessoa e foto) ── */
-function TxRow({ t, avatars, onDelete, onEdit, onViewPhoto }) {
+function TxRow({ t, avatars, customCategories=[], onDelete, onEdit, onViewPhoto }) {
   return (
     <div style={{display:"flex",alignItems:"center",gap:10,padding:"12px 0",borderBottom:`1px solid ${C.hairline}`}}>
       <div style={{position:"relative",flexShrink:0}}>
@@ -3169,7 +3169,7 @@ function ReportSheet({ data, month, person, onClose, onImport }) {
 /* ═══════════════════════════════════════════════
    BUSCA
 ═══════════════════════════════════════════════ */
-function SearchModal({ transactions, avatars, onClose, onEdit, onDelete, onViewPhoto }) {
+function SearchModal({ transactions, avatars, customCategories=[], onClose, onEdit, onDelete, onViewPhoto }) {
   const [q, setQ] = useState("");
   const results = useMemo(()=>{
     if(!q.trim())return[];
@@ -3188,7 +3188,7 @@ function SearchModal({ transactions, avatars, onClose, onEdit, onDelete, onViewP
           <button onClick={onClose} style={{background:C.bgAlt,border:`1px solid ${C.border}`,borderRadius:12,padding:"0 13px",cursor:"pointer",color:C.muted,display:"flex",alignItems:"center"}}><X size={16}/></button>
         </div>
         {q&&results.length===0&&<div style={{textAlign:"center",color:C.muted,padding:24,fontSize:13}}>Nenhum resultado.</div>}
-        {results.map(t=><TxRow key={t.id} t={t} avatars={avatars} onEdit={onEdit} onDelete={onDelete} onViewPhoto={onViewPhoto}/>)}
+        {results.map(t=><TxRow key={t.id} t={t} avatars={avatars} customCategories={customCategories} onEdit={onEdit} onDelete={onDelete} onViewPhoto={onViewPhoto}/>)}
       </div>
     </div>
   );
