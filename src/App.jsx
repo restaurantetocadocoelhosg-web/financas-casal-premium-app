@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "3.0";
+const APP_VERSION = "3.1";
 // Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
 const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
 // URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
@@ -367,7 +367,7 @@ function fileToDataUrl(file) {
 }
 
 /* ── storage ── */
-const DEFAULT_DATA = { transactions:[], goals:[], fixedExpenses:[], avatars:{}, customCategories:[] };
+const DEFAULT_DATA = { transactions:[], goals:[], fixedExpenses:[], avatars:{}, customCategories:[], sinonimos:{} };
 const sanitizeData = (input) => ({
   ...DEFAULT_DATA,
   ...input,
@@ -375,6 +375,7 @@ const sanitizeData = (input) => ({
   goals: Array.isArray(input?.goals) ? input.goals : [],
   fixedExpenses: Array.isArray(input?.fixedExpenses) ? input.fixedExpenses : [],
   avatars: input?.avatars && typeof input.avatars === "object" ? input.avatars : {},
+  sinonimos: input?.sinonimos && typeof input.sinonimos === "object" ? input.sinonimos : {},
   customCategories: Array.isArray(input?.customCategories)
     ? input.customCategories.filter(c=>c && typeof c.name==="string" && c.name.trim()).map(c=>({
         name: c.name.trim(),
@@ -959,12 +960,13 @@ export default function App() {
   // Lê os dados do workspace das 5 tabelas por-linha e monta o objeto do app.
   const loadOnlineData = useCallback(async (workspaceId) => {
     if (!SUPABASE_ENABLED || !supabase || !workspaceId) return DEFAULT_DATA;
-    const [tx, goals, fixed, cats, avatars] = await Promise.all([
+    const [tx, goals, fixed, cats, avatars, sins] = await Promise.all([
       supabase.from("finance_tx").select("*").eq("workspace_id", workspaceId).order("created_at", { ascending:false }),
       supabase.from("finance_goals").select("*").eq("workspace_id", workspaceId).order("created_at", { ascending:false }),
       supabase.from("finance_fixed").select("*").eq("workspace_id", workspaceId).order("created_at", { ascending:false }),
       supabase.from("finance_categories").select("*").eq("workspace_id", workspaceId),
       supabase.from("finance_avatars").select("*").eq("workspace_id", workspaceId),
+      supabase.from("finance_sinonimos").select("*").eq("workspace_id", workspaceId),
     ]);
     return sanitizeData({
       transactions: (tx.data||[]).map(rowToTx),
@@ -972,6 +974,7 @@ export default function App() {
       fixedExpenses: (fixed.data||[]).map(rowToFixed),
       customCategories: (cats.data||[]).map(c=>({ name:c.name, emoji:c.emoji, tipo:c.tipo })),
       avatars: Object.fromEntries((avatars.data||[]).map(a=>[a.person, a.image])),
+      sinonimos: Object.fromEntries((sins.data||[]).map(s=>[s.termo, s.categoria])),
     });
   },[]);
 
@@ -1536,6 +1539,25 @@ export default function App() {
     if (online) supabase.from("finance_categories").delete().eq("workspace_id",wsId).eq("name",name).eq("tipo",tipo);
   },[patchData,online,wsId,showToast]);
 
+  // Sinônimos: a IA aprende como cada um fala (termo → categoria).
+  const addSinonimo = useCallback((termo, categoria, silencioso)=>{
+    const t = normalize(String(termo||"").trim()); // guarda em minúsculo/sem acento pra casar
+    const cat = String(categoria||"").trim();
+    if (!t || !cat) return;
+    patchData(d=>({...d, sinonimos:{...d.sinonimos, [t]:cat}}));
+    if (!silencioso) showToast(`Aprendi: "${termo}" → ${categoria} ✓`);
+    if (online) (async()=>{
+      const { error } = await supabase.from("finance_sinonimos").upsert({workspace_id:wsId, termo:t, categoria:cat}, {onConflict:"workspace_id,termo"});
+      if (error && !silencioso) showToast("⚠ Falha ao salvar o sinônimo");
+    })();
+  },[patchData,online,wsId,showToast]);
+  const deleteSinonimo = useCallback((termo)=>{
+    const t = normalize(String(termo||"").trim());
+    patchData(d=>{ const s={...d.sinonimos}; delete s[t]; return {...d, sinonimos:s}; });
+    showToast("Sinônimo removido ✓");
+    if (online) supabase.from("finance_sinonimos").delete().eq("workspace_id",wsId).eq("termo",t);
+  },[patchData,online,wsId,showToast]);
+
   const txMonth = useMemo(()=>data.transactions.filter(t=>{
     const d = new Date(t.data+"T12:00:00");
     return d.getFullYear()===month.y && d.getMonth()===month.m && (person==="Todos"||t.pessoa===person);
@@ -1659,6 +1681,8 @@ export default function App() {
                 onToggleFeature={toggleFeature}
                 isCreator={isCreator}
                 onLoadCreatorStats={loadCreatorStats}
+                onAddSinonimo={addSinonimo}
+                onDeleteSinonimo={deleteSinonimo}
                 onLogout={logout}
               />
             : <AdminPanel auth={auth} currentUser={publicUser(currentUser)} data={data} onCreateUser={createUser} onDeleteUser={deleteUser} onLogout={logout}/>
@@ -1680,7 +1704,7 @@ export default function App() {
       </div>
 
       {/* ── MODAIS ── */}
-      {aiOpen     && <AISheet defaultPerson={person==="Todos"?people[0]:person} people={people} avatars={data.avatars} customCategories={data.customCategories} onAddCategory={addCategory} onClose={()=>setAiOpen(false)} onConfirm={(tx)=>{addTx(tx);setAiOpen(false);}} onOpenNota={()=>{setAiOpen(false);setNotaOpen(true);}}/>}
+      {aiOpen     && <AISheet defaultPerson={person==="Todos"?people[0]:person} people={people} avatars={data.avatars} customCategories={data.customCategories} sinonimos={data.sinonimos} onLearn={addSinonimo} onAddCategory={addCategory} onClose={()=>setAiOpen(false)} onConfirm={(tx)=>{addTx(tx);setAiOpen(false);}} onOpenNota={()=>{setAiOpen(false);setNotaOpen(true);}}/>}
       {notaOpen   && <NotaSheet defaultPerson={person==="Todos"?people[0]:person} people={people} avatars={data.avatars} customCategories={data.customCategories} onAddCategory={addCategory} onClose={()=>setNotaOpen(false)} onConfirm={(tx,foto)=>{addTx(tx,foto);setNotaOpen(false);}}/>}
       {editing    && <EditSheet tx={editing} avatars={data.avatars} people={people} customCategories={data.customCategories} onAddCategory={addCategory} onClose={()=>setEditing(null)} onSave={(tx,foto,fotoRemovida)=>{tx.id?updateTx(tx,foto,fotoRemovida):addTx(tx,foto);setEditing(null);}}/>}
       {searchOpen && <SearchModal transactions={data.transactions} avatars={data.avatars} customCategories={data.customCategories} onClose={()=>setSearchOpen(false)} onEdit={t=>{setSearchOpen(false);setEditing(t);}} onDelete={deleteTx} onViewPhoto={setPhotoView}/>}
@@ -1986,7 +2010,7 @@ function CreatorPanel({ onLoad }) {
   );
 }
 
-function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, lastSyncedAt, onCreateInvite, onRefresh, onAddCategory, onUpdateCategory, onDeleteCategory, features={}, onToggleFeature, isCreator=false, onLoadCreatorStats, onLogout }) {
+function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, lastSyncedAt, onCreateInvite, onRefresh, onAddCategory, onUpdateCategory, onDeleteCategory, features={}, onToggleFeature, isCreator=false, onLoadCreatorStats, onAddSinonimo, onDeleteSinonimo, onLogout }) {
   const [role, setRole] = useState("member");
   const [invite, setInvite] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -2125,6 +2149,8 @@ function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, l
 
       <CategoriesManager customCategories={data.customCategories||[]} onAddCategory={onAddCategory} onUpdateCategory={onUpdateCategory} onDeleteCategory={onDeleteCategory}/>
 
+      <SinonimosManager sinonimos={data.sinonimos||{}} categorias={[...new Set([...catsForTipo("gasto",data.customCategories||[]), ...catsForTipo("ganho",data.customCategories||[])])]} onAdd={onAddSinonimo} onDelete={onDeleteSinonimo}/>
+
       <Card style={{marginBottom:14}}>
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
           <Users size={17} color={C.plum}/>
@@ -2143,6 +2169,39 @@ function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, l
         ))}
       </Card>
     </div>
+  );
+}
+
+// Gerencia os SINÔNIMOS que a IA usa (como cada um fala → categoria).
+function SinonimosManager({ sinonimos={}, categorias=[], onAdd, onDelete }) {
+  const [termo, setTermo] = useState("");
+  const [cat, setCat] = useState(categorias[0]||"Outros");
+  const lista = Object.entries(sinonimos);
+  const criar = () => { if(!termo.trim())return; onAdd(termo, cat, false); setTermo(""); };
+  return (
+    <Card style={{marginBottom:14}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+        <BrainCircuit size={17} color={C.caramelDeep}/>
+        <div style={{fontFamily:F.display,fontSize:17,fontWeight:600}}>Sinônimos da IA</div>
+      </div>
+      <div style={{fontSize:12,color:C.muted,marginBottom:12,lineHeight:1.5}}>Ensine como você fala: um termo e a categoria certa. A IA também aprende sozinha quando você corrige a categoria de um lançamento.</div>
+      <div style={{display:"flex",gap:8,marginBottom:6}}>
+        <Input value={termo} onChange={e=>setTermo(e.target.value)} placeholder="Ex: uber, ifood, mercado do zé" style={{flex:1.3}}/>
+        <Select value={cat} onChange={e=>setCat(e.target.value)} style={{flex:1}}>{categorias.map(c=><option key={c} value={c}>{c}</option>)}</Select>
+        <Btn variant="gold" small onClick={criar} disabled={!termo.trim()}><Plus size={14}/></Btn>
+      </div>
+      <div style={{marginTop:8}}>
+        {lista.length===0
+          ? <div style={{fontSize:12,color:C.muted,textAlign:"center",padding:"8px 0"}}>Nenhum sinônimo ainda. A IA vai aprender conforme você usa.</div>
+          : lista.map(([t,c])=>(
+            <div key={t} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderTop:`1px solid ${C.hairline}`}}>
+              <span style={{flex:1,fontSize:13}}><b>{t}</b> <span style={{color:C.muted}}>→</span> {c}</span>
+              <button onClick={()=>onDelete(t)} style={{background:C.redPale,border:"none",borderRadius:8,padding:6,cursor:"pointer",display:"flex"}}><Trash2 size={12} color={C.red}/></button>
+            </div>
+          ))
+        }
+      </div>
+    </Card>
   );
 }
 
@@ -3144,13 +3203,14 @@ function GoalSheet({ goal, onClose, onUpdate }) {
 /* ═══════════════════════════════════════════════
    AGENTE POR VOZ / TEXTO
 ═══════════════════════════════════════════════ */
-function AISheet({ onClose, onConfirm, defaultPerson, people=[], avatars, customCategories=[], onAddCategory, onOpenNota }) {
+function AISheet({ onClose, onConfirm, defaultPerson, people=[], avatars, customCategories=[], sinonimos={}, onLearn, onAddCategory, onOpenNota }) {
   const [text, setText] = useState("");
   const [listening, setListening] = useState(false);
   const [loading, setLoading] = useState(false);
   const [pending, setPending] = useState(null);
   const [error, setError] = useState("");
   const recRef = useRef(null);
+  const sugRef = useRef(null); // guarda o palpite original da IA (categoria + termo) pra detectar correção
 
   const speechOK = typeof window!=="undefined"&&(window.SpeechRecognition||window.webkitSpeechRecognition);
   const toggleMic = () => {
@@ -3170,9 +3230,13 @@ function AISheet({ onClose, onConfirm, defaultPerson, people=[], avatars, custom
     try{
       // 1) tenta a IA de verdade (Haiku) — entende data relativa, sinônimos, etc.
       const categorias = [...new Set([...catsForTipo("gasto",customCategories), ...catsForTipo("ganho",customCategories)])];
-      const ai = await callHaiku(text, { hoje:todayISO(), pessoas:people, categorias, pagamentos:PAYMENTS, sinonimos:{} });
-      if (ai) { setPending(normalizeAiTx(ai, defaultPerson, people, customCategories)); }
-      else { setPending(interpretFinancialText(text, defaultPerson, people)); } // 2) fallback: regex local
+      const ai = await callHaiku(text, { hoje:todayISO(), pessoas:people, categorias, pagamentos:PAYMENTS, sinonimos });
+      if (ai) {
+        const norm = normalizeAiTx(ai, defaultPerson, people, customCategories);
+        sugRef.current = { categoria: norm.categoria, termo: String(ai.termo||"").trim() }; // palpite original
+        setPending(norm);
+      }
+      else { sugRef.current=null; setPending(interpretFinancialText(text, defaultPerson, people)); } // 2) fallback: regex local
     }catch{
       try { setPending(interpretFinancialText(text, defaultPerson, people)); }
       catch { setError('Não consegui interpretar. Ex.: "Gastei 50 reais no mercado no Pix".'); }
@@ -3203,7 +3267,13 @@ function AISheet({ onClose, onConfirm, defaultPerson, people=[], avatars, custom
           </button>
         </>
       ):(
-        <TxForm tx={pending} avatars={avatars} people={people} customCategories={customCategories} onAddCategory={onAddCategory} onChange={setPending} onCancel={()=>setPending(null)} onSave={()=>{const{_duvida,_confianca,...limpo}=pending;onConfirm({...limpo,valor:Number(limpo.valor)});}} saveLabel="Confirmar e salvar"/>
+        <TxForm tx={pending} avatars={avatars} people={people} customCategories={customCategories} onAddCategory={onAddCategory} onChange={setPending} onCancel={()=>setPending(null)} onSave={()=>{
+          const{_duvida,_confianca,...limpo}=pending;
+          // Aprendizado: se você corrigiu a categoria que a IA sugeriu, ela guarda o termo → categoria certa.
+          const sug = sugRef.current;
+          if (sug && sug.termo && onLearn && normalize(limpo.categoria)!==normalize(sug.categoria)) onLearn(sug.termo, limpo.categoria, false);
+          onConfirm({...limpo,valor:Number(limpo.valor)});
+        }} saveLabel="Confirmar e salvar"/>
       )}
     </Sheet>
   );
