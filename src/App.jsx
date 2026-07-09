@@ -55,7 +55,11 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "2.7";
+const APP_VERSION = "2.8";
+// Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
+const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
+// URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
+const APP_URL = "https://restaurantetocadocoelhosg-web.github.io/financas-casal-premium-app/";
 // v-multi-tenant: nomes NAO sao mais fixos (cada workspace tem os seus, vindos de finance_members).
 // Cor por pessoa: hash estavel do nome -> mesma cor sempre, sem precisar saber a lista toda.
 const PESSOA_CASAL = "Casal";
@@ -1116,6 +1120,14 @@ export default function App() {
     return currentUser;
   },[currentUser, onlineMember, onlineUser]);
 
+  // Conta criadora (dono do app): acesso a Módulos, Supabase e estatísticas globais.
+  const isCreator = SUPABASE_ENABLED && onlineUser?.email?.toLowerCase() === CREATOR_EMAIL.toLowerCase();
+  const loadCreatorStats = useCallback(async ()=>{
+    if (!SUPABASE_ENABLED || !supabase) return null;
+    const { data, error } = await supabase.rpc("finance_creator_stats");
+    return error ? null : data;
+  },[]);
+
   useEffect(()=>{
     if (tab==="admin" && effectiveUser?.role !== "admin") setTab("home");
   },[tab,effectiveUser]);
@@ -1224,7 +1236,7 @@ export default function App() {
     return { ok:true };
   },[]);
 
-  const onlineSignUp = useCallback(async ({ name, email, password, confirm }) => {
+  const onlineSignUp = useCallback(async ({ name, email, password, confirm, idade, telefone }) => {
     if (!supabase) return { ok:false, message:"Supabase não configurado." };
     const cleanEmail = String(email||"").trim().toLowerCase();
     const displayName = String(name||"").trim();
@@ -1236,7 +1248,10 @@ export default function App() {
     const { data: created, error } = await supabase.auth.signUp({
       email: cleanEmail,
       password,
-      options: { data:{ display_name:displayName } },
+      options: {
+        data:{ display_name:displayName, idade:String(idade||"").trim(), telefone:String(telefone||"").trim() },
+        emailRedirectTo: APP_URL, // link de confirmação volta pro app, não localhost
+      },
     });
     if (error) {
       setOnlineLoading(false);
@@ -1599,6 +1614,8 @@ export default function App() {
                 onDeleteCategory={deleteCategory}
                 features={features}
                 onToggleFeature={toggleFeature}
+                isCreator={isCreator}
+                onLoadCreatorStats={loadCreatorStats}
                 onLogout={logout}
               />
             : <AdminPanel auth={auth} currentUser={publicUser(currentUser)} data={data} onCreateUser={createUser} onDeleteUser={deleteUser} onLogout={logout}/>
@@ -1625,7 +1642,7 @@ export default function App() {
       {editing    && <EditSheet tx={editing} avatars={data.avatars} people={people} customCategories={data.customCategories} onAddCategory={addCategory} onClose={()=>setEditing(null)} onSave={(tx,foto,fotoRemovida)=>{tx.id?updateTx(tx,foto,fotoRemovida):addTx(tx,foto);setEditing(null);}}/>}
       {searchOpen && <SearchModal transactions={data.transactions} avatars={data.avatars} customCategories={data.customCategories} onClose={()=>setSearchOpen(false)} onEdit={t=>{setSearchOpen(false);setEditing(t);}} onDelete={deleteTx} onViewPhoto={setPhotoView}/>}
       {profileOpen&& <ProfileSheet avatars={data.avatars} people={people} onSetAvatar={setAvatar} onClose={()=>setProfileOpen(false)}/>}
-      {reportOpen && <ReportSheet data={data} month={month} person={person} onClose={()=>setReportOpen(false)} onImport={importData}/>}
+      {reportOpen && <ReportSheet data={data} month={month} person={person} isAdmin={effectiveUser?.role==="admin"} onClose={()=>setReportOpen(false)} onImport={importData}/>}
       {photoView  && <PhotoViewer txId={photoView} onClose={()=>setPhotoView(null)}/>}
       {!billsAlertDismissed && billsDue.length>0 && <BillsAlert bills={billsDue} goalNudge={goalNudge} customCategories={data.customCategories} onPaid={toggleFixedPaid} onClose={dismissBillsAlert}/>}
 
@@ -1748,7 +1765,17 @@ function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, syncSta
           {mode==="create"&&(
             <>
               <Eyebrow style={{marginBottom:5}}>Nome</Eyebrow>
-              <Input value={form.name} onChange={e=>s("name",e.target.value)} placeholder="Seu nome" autoComplete="name" style={{marginBottom:10}}/>
+              <Input value={form.name} onChange={e=>s("name",e.target.value)} placeholder="Seu nome completo" autoComplete="name" style={{marginBottom:10}}/>
+              <div style={{display:"flex",gap:8}}>
+                <div style={{flex:1}}>
+                  <Eyebrow style={{marginBottom:5}}>Idade</Eyebrow>
+                  <Input type="number" inputMode="numeric" value={form.idade||""} onChange={e=>s("idade",e.target.value)} placeholder="Ex: 30" style={{marginBottom:10}}/>
+                </div>
+                <div style={{flex:1.6}}>
+                  <Eyebrow style={{marginBottom:5}}>Telefone</Eyebrow>
+                  <Input type="tel" inputMode="tel" value={form.telefone||""} onChange={e=>s("telefone",e.target.value)} placeholder="(00) 00000-0000" autoComplete="tel" style={{marginBottom:10}}/>
+                </div>
+              </div>
             </>
           )}
           <Eyebrow style={{marginBottom:5}}>Email</Eyebrow>
@@ -1873,7 +1900,50 @@ function OnlineWorkspaceGate({ user, onCreateWorkspace, onAcceptInvite, onLogout
   );
 }
 
-function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, lastSyncedAt, onCreateInvite, onRefresh, onAddCategory, onUpdateCategory, onDeleteCategory, features={}, onToggleFeature, onLogout }) {
+// Painel exclusivo do CRIADOR (dono do app): visão global de contas, espaços e uso.
+function CreatorPanel({ onLoad }) {
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const carregar = () => { setLoading(true); onLoad().then(s=>{setStats(s);setLoading(false);}); };
+  useEffect(()=>{ carregar(); },[]);
+  const box = (label, val, cor, bg) => (
+    <div style={{background:bg,border:`1px solid ${C.border}`,borderRadius:12,padding:"12px 10px",textAlign:"center"}}>
+      <div style={{fontFamily:F.display,fontSize:22,fontWeight:600,color:cor}}>{val}</div>
+      <div style={{fontSize:10.5,color:C.muted,fontWeight:700,marginTop:2}}>{label}</div>
+    </div>
+  );
+  return (
+    <Card style={{marginBottom:14,border:`1.5px solid ${C.caramelDeep}`,background:"#FBF6EC"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+        <LockKeyhole size={17} color={C.caramelDeep}/>
+        <div style={{fontFamily:F.display,fontSize:17,fontWeight:600}}>Painel do Criador</div>
+        <span style={{fontSize:9.5,background:C.caramelDeep,color:"#fff",borderRadius:99,padding:"2px 7px",fontWeight:800,marginLeft:"auto"}}>SÓ VOCÊ</span>
+      </div>
+      <div style={{fontSize:11.5,color:C.muted,marginBottom:12,lineHeight:1.4}}>Visão geral do app inteiro (todas as contas). Ninguém além de você vê isto.</div>
+      {loading ? (
+        <div style={{textAlign:"center",padding:16}}><Loader2 size={20} color={C.gold} style={{animation:"spin 1s linear infinite"}}/></div>
+      ) : !stats ? (
+        <div style={{fontSize:12.5,color:C.red,textAlign:"center",padding:10}}>Não consegui carregar as estatísticas.</div>
+      ) : (
+        <>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
+            {box("Contas", stats.contas, C.caramelDeep, C.goldPale)}
+            {box("Espaços", stats.espacos, C.plum, C.plumPale)}
+            {box("Ativos 15min", stats.ativos15min, C.green, C.greenPale)}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+            {box("Membros", stats.membros, C.blue, C.bluePale)}
+            {box("Lançamentos", stats.lancamentos, C.ink, C.bgAlt)}
+            {box("Novos 7d", stats.contas7dias, C.green, C.greenPale)}
+          </div>
+        </>
+      )}
+      <Btn variant="ghost" small onClick={carregar} style={{width:"100%",marginTop:12}}><RotateCcw size={13}/> Atualizar números</Btn>
+    </Card>
+  );
+}
+
+function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, lastSyncedAt, onCreateInvite, onRefresh, onAddCategory, onUpdateCategory, onDeleteCategory, features={}, onToggleFeature, isCreator=false, onLoadCreatorStats, onLogout }) {
   const [role, setRole] = useState("member");
   const [invite, setInvite] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -1930,6 +2000,9 @@ function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, l
         </Card>
       </div>
 
+      {isCreator && <CreatorPanel onLoad={onLoadCreatorStats}/>}
+
+      {isCreator && (
       <Card style={{marginBottom:14}}>
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
           <Cloud size={17} color={C.caramelDeep}/>
@@ -1942,6 +2015,10 @@ function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, l
         </div>
         <Btn variant="ghost" small onClick={onRefresh} style={{marginTop:12}}><RotateCcw size={14}/> Atualizar</Btn>
       </Card>
+      )}
+      {!isCreator && (
+        <Btn variant="ghost" small onClick={onRefresh} style={{width:"100%",marginBottom:14}}><RotateCcw size={14}/> Atualizar dados</Btn>
+      )}
 
       <Card style={{marginBottom:14}}>
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
@@ -1979,12 +2056,13 @@ function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, l
 
       <ShareAppCard/>
 
+      {isCreator && (
       <Card style={{marginBottom:14}}>
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
           <BadgeDollarSign size={17} color={C.caramelDeep}/>
           <div style={{fontFamily:F.display,fontSize:17,fontWeight:600}}>Módulos do app</div>
         </div>
-        <div style={{fontSize:12,color:C.muted,marginBottom:10,lineHeight:1.5}}>Ligue ou desligue cada recurso. O que estiver ligado aparece pra todo mundo deste espaço.</div>
+        <div style={{fontSize:12,color:C.muted,marginBottom:10,lineHeight:1.5}}>Ligue ou desligue cada recurso do app (só você, criador, controla isto).</div>
         {Object.keys(FEATURE_LABELS).map(key=>{
           const on = features[key]!==false;
           return (
@@ -2000,6 +2078,7 @@ function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, l
           );
         })}
       </Card>
+      )}
 
       <CategoriesManager customCategories={data.customCategories||[]} onAddCategory={onAddCategory} onUpdateCategory={onUpdateCategory} onDeleteCategory={onDeleteCategory}/>
 
@@ -2901,7 +2980,7 @@ function Metas({ goals, onAdd, onUpdate, onDelete }) {
                 <div style={{width:48,height:48,borderRadius:14,background:C.goldPale,display:"flex",alignItems:"center",justifyContent:"center",fontSize:26}}>{g.emoji}</div>
                 <div>
                   <div style={{fontFamily:F.display,fontWeight:600,fontSize:16}}>{g.nome}</div>
-                  {g.prazo&&<div style={{fontSize:11.5,color:C.muted}}>até {new Date(g.prazo+"T12:00:00").toLocaleDateString("pt-BR",{month:"short",year:"numeric"})}</div>}
+                  {g.prazo&&<div style={{fontSize:11.5,color:C.muted}}>até {new Date(g.prazo+"T12:00:00").toLocaleDateString("pt-BR")}</div>}
                 </div>
               </div>
               <button onClick={(e)=>{e.stopPropagation();if(window.confirm("Excluir esta meta?"))onDelete(g.id)}} style={{background:C.redPale,border:"none",borderRadius:9,padding:6,cursor:"pointer",display:"flex"}}><Trash2 size={13} color={C.red}/></button>
@@ -2933,7 +3012,7 @@ function Metas({ goals, onAdd, onUpdate, onDelete }) {
           <Input placeholder="Nome da meta (ex: Viagem)" value={form.nome} onChange={e=>setForm({...form,nome:e.target.value})} style={{marginBottom:10}}/>
           <div style={{display:"flex",gap:8,marginBottom:12}}>
             <Input type="number" inputMode="decimal" placeholder="Valor alvo (R$)" value={form.alvo} onChange={e=>setForm({...form,alvo:e.target.value})} style={{flex:1}}/>
-            <Input type="month" value={form.prazo?form.prazo.slice(0,7):""} onChange={e=>setForm({...form,prazo:e.target.value+"-01"})} style={{flex:1}}/>
+            <Input type="date" value={form.prazo||""} onChange={e=>setForm({...form,prazo:e.target.value})} style={{flex:1}}/>
           </div>
           <div style={{display:"flex",gap:8}}>
             <Btn variant="outline" onClick={()=>setForm(null)} style={{flex:1}}>Cancelar</Btn>
@@ -3340,7 +3419,7 @@ function ChatIA({ transactions, fixedExpenses, goals, people=[] }) {
 /* ═══════════════════════════════════════════════
    RELATÓRIOS E EXPORTAÇÃO
 ═══════════════════════════════════════════════ */
-function ReportSheet({ data, month, person, onClose, onImport }) {
+function ReportSheet({ data, month, person, isAdmin=false, onClose, onImport }) {
   const fileRef = useRef(null);
   const report = useMemo(
     ()=>buildFinancialReport(data.transactions, data.fixedExpenses, data.goals, month, person),
@@ -3414,6 +3493,7 @@ function ReportSheet({ data, month, person, onClose, onImport }) {
         ))}
       </div>
 
+      {isAdmin && (
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
         <Btn variant="ghost" onClick={()=>exportBackup(data)} style={{width:"100%"}}>
           <Database size={15} color={C.caramelDeep}/> Backup JSON
@@ -3422,10 +3502,11 @@ function ReportSheet({ data, month, person, onClose, onImport }) {
           <Upload size={15}/> Importar
         </Btn>
       </div>
+      )}
 
       <div style={{marginTop:12,background:C.bluePale,border:`1px solid rgba(37,99,168,0.16)`,borderRadius:12,padding:"11px 12px",fontSize:12.4,lineHeight:1.45,color:C.inkSoft,display:"flex",gap:8}}>
         <ShieldCheck size={16} color={C.blue} style={{flexShrink:0,marginTop:1}}/>
-        <span>Os dados ficam no navegador deste aparelho. Para compartilhar entre celulares sem banco online, exporte o backup JSON e importe no outro aparelho.</span>
+        <span>{isAdmin ? "Backup e importação são só do admin, pra proteger os dados do espaço." : "Exporte relatórios em Excel, PDF ou CSV acima."}</span>
       </div>
     </Sheet>
   );
