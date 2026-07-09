@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "2.6";
+const APP_VERSION = "2.7";
 // v-multi-tenant: nomes NAO sao mais fixos (cada workspace tem os seus, vindos de finance_members).
 // Cor por pessoa: hash estavel do nome -> mesma cor sempre, sem precisar saber a lista toda.
 const PESSOA_CASAL = "Casal";
@@ -394,8 +394,62 @@ const MOTIVA_FRASES = [
   "Hoje é um ótimo dia pra cuidar do que importa. 🙌",
 ];
 const fraseMotivacional = () => MOTIVA_FRASES[Math.floor(Math.random()*MOTIVA_FRASES.length)];
-const BILL_ALERTS_KEY = "prosperidade-bill-alerts"; // preferência local (ligar/desligar avisos)
+
+// ── INSIGHTS DE ECONOMIA: análises automáticas comparando com o mês passado ──
+function buildInsights(allTx, month) {
+  const inMonth = (t, y, m) => { const d = new Date((t.data||"")+"T12:00:00"); return d.getFullYear()===y && d.getMonth()===m; };
+  const prev = month.m===0 ? { y:month.y-1, m:11 } : { y:month.y, m:month.m-1 };
+  const gastoAtual = allTx.filter(t=>t.tipo==="gasto" && inMonth(t, month.y, month.m));
+  const gastoPrev  = allTx.filter(t=>t.tipo==="gasto" && inMonth(t, prev.y, prev.m));
+  const totAtual = gastoAtual.reduce((s,t)=>s+Number(t.valor||0),0);
+  const totPrev  = gastoPrev.reduce((s,t)=>s+Number(t.valor||0),0);
+  const somaCat = (arr) => arr.reduce((a,t)=>{a[t.categoria]=(a[t.categoria]||0)+Number(t.valor||0);return a;},{});
+  const catAtual = somaCat(gastoAtual), catPrev = somaCat(gastoPrev);
+  const out = [];
+
+  // 1) comparação geral com o mês passado
+  if (totPrev>0 && gastoAtual.length) {
+    const dif = totAtual - totPrev;
+    const pct = Math.abs(Math.round(dif/totPrev*100));
+    if (dif > 0 && pct>=5) out.push({ tone:"bad",  emoji:"📈", text:`Você já gastou ${pct}% a mais que o mês passado (${fmt(totAtual)} vs ${fmt(totPrev)}). Atenção pra segurar o ritmo.` });
+    else if (dif < 0 && pct>=5) out.push({ tone:"good", emoji:"📉", text:`Boa! Você gastou ${pct}% a menos que o mês passado. Economia de ${fmt(Math.abs(dif))} até agora. 🎉` });
+  }
+
+  // 2) categoria que mais subiu vs mês passado
+  let maiorSalto = null;
+  Object.keys(catAtual).forEach(c=>{
+    const antes = catPrev[c]||0, agora = catAtual[c];
+    if (antes>0 && agora>antes) { const p = Math.round((agora-antes)/antes*100); if (p>=25 && (!maiorSalto || p>maiorSalto.p)) maiorSalto = { c, p, agora, antes }; }
+  });
+  if (maiorSalto) out.push({ tone:"bad", emoji:"⚠️", text:`${maiorSalto.c} subiu ${maiorSalto.p}% em relação ao mês passado (${fmt(maiorSalto.antes)} → ${fmt(maiorSalto.agora)}). Dá pra segurar aí.` });
+
+  // 3) supérfluos do mês
+  const superfluo = gastoAtual.filter(t=>t.necessario===false).reduce((s,t)=>s+Number(t.valor||0),0);
+  if (superfluo>0 && totAtual>0) {
+    const pct = Math.round(superfluo/totAtual*100);
+    out.push({ tone:"warn", emoji:"🍔", text:`${fmt(superfluo)} foram em gastos supérfluos (${pct}% do mês). Se guardasse metade, já ia pra uma meta.` });
+  }
+
+  // 4) maior categoria do mês
+  const topCat = Object.entries(catAtual).sort((a,b)=>b[1]-a[1])[0];
+  if (topCat && totAtual>0) out.push({ tone:"info", emoji:"🏆", text:`Sua maior despesa é ${topCat[0]}: ${fmt(topCat[1])} (${Math.round(topCat[1]/totAtual*100)}% do mês).` });
+
+  if (!out.length) out.push({ tone:"good", emoji:"✨", text:"Ainda não há gastos suficientes pra comparar. Continue lançando que os insights aparecem!" });
+  return out.slice(0,4);
+}
 const BILLS_SNOOZE_KEY = "prosperidade-bills-snooze"; // data em que o alerta foi adiado ("ver depois")
+
+// ── MÓDULOS ativáveis pelo admin (cada benefício do app pode ser ligado/desligado) ──
+const FEATURES_KEY = "prosperidade-modulos";
+const DEFAULT_FEATURES = { billAlerts:true, insights:true };
+const FEATURE_LABELS = {
+  billAlerts: { nome:"Avisos de contas", desc:"Alerta ao abrir o app quando há conta perto de vencer." },
+  insights:   { nome:"Insights de economia", desc:"Análises automáticas: comparação com o mês passado, onde dá pra economizar." },
+};
+function loadFeatures() {
+  try { return { ...DEFAULT_FEATURES, ...JSON.parse(localStorage.getItem(FEATURES_KEY) || "{}") }; }
+  catch { return { ...DEFAULT_FEATURES }; }
+}
 
 // Junta categorias base + as criadas pelo admin (custom vêm antes de "Outros").
 function catsForTipo(tipo, custom=[]) {
@@ -837,8 +891,8 @@ export default function App() {
   // Alerta de contas: fica "adiado" pelo resto do DIA quando clica "Ver depois" (não reaparece a cada abertura).
   const [billsAlertDismissed, setBillsAlertDismissed] = useState(()=>{ try { return localStorage.getItem(BILLS_SNOOZE_KEY) === todayISO(); } catch { return false; } });
   const dismissBillsAlert = useCallback(()=>{ setBillsAlertDismissed(true); try { localStorage.setItem(BILLS_SNOOZE_KEY, todayISO()); } catch {} },[]);
-  const [billAlertsEnabled, setBillAlertsEnabled] = useState(()=>{ try { return localStorage.getItem(BILL_ALERTS_KEY) !== "off"; } catch { return true; } });
-  const toggleBillAlerts = useCallback((on)=>{ setBillAlertsEnabled(on); try { localStorage.setItem(BILL_ALERTS_KEY, on?"on":"off"); } catch {} },[]);
+  const [features, setFeatures] = useState(loadFeatures);
+  const toggleFeature = useCallback((key, on)=>{ setFeatures(f=>{ const next={...f,[key]:on}; try{localStorage.setItem(FEATURES_KEY, JSON.stringify(next));}catch{} return next; }); },[]);
   const [toast, setToast] = useState(null);
   const [onlineUser, setOnlineUser] = useState(null);
   const [onlineWorkspace, setOnlineWorkspace] = useState(null);
@@ -1466,7 +1520,7 @@ export default function App() {
 
   // Contas fixas vencidas/vencendo em até 7 dias (não pagas no mês) → alerta ao abrir.
   const billsDue = (()=>{
-    if (!billAlertsEnabled) return [];
+    if (!features.billAlerts) return [];
     const mk = curMonthKey();
     const hoje = new Date().getDate();
     return data.fixedExpenses
@@ -1525,7 +1579,7 @@ export default function App() {
           <button onClick={()=>setMonth(m=>m.m===11?{y:m.y+1,m:0}:{y:m.y,m:m.m+1})} style={{background:"none",border:"none",padding:8,cursor:"pointer",display:"flex"}}><ChevronRight size={18} color={C.muted}/></button>
         </div>
 
-        {tab==="home"    && <Dashboard tx={txMonth} allTx={data.transactions} month={month} fixed={data.fixedExpenses} avatars={data.avatars} people={people} customCategories={data.customCategories} onNewAI={()=>setAiOpen(true)} onNewNota={()=>setNotaOpen(true)} onNewManual={newManualTx} onOpenReports={()=>setReportOpen(true)} onAddFixed={addFixed} onUpdateFixed={updateFixed} onDeleteFixed={deleteFixed} onTogglePaid={toggleFixedPaid}/>}
+        {tab==="home"    && <Dashboard tx={txMonth} allTx={data.transactions} month={month} fixed={data.fixedExpenses} avatars={data.avatars} people={people} customCategories={data.customCategories} features={features} onNewAI={()=>setAiOpen(true)} onNewNota={()=>setNotaOpen(true)} onNewManual={newManualTx} onOpenReports={()=>setReportOpen(true)} onAddFixed={addFixed} onUpdateFixed={updateFixed} onDeleteFixed={deleteFixed} onTogglePaid={toggleFixedPaid}/>}
         {tab==="extrato" && <Extrato tx={txMonth} avatars={data.avatars} customCategories={data.customCategories} onDelete={deleteTx} onEdit={setEditing} onViewPhoto={setPhotoView}/>}
         {tab==="metas"   && <Metas goals={data.goals} onAdd={addGoal} onUpdate={updateGoal} onDelete={deleteGoal}/>}
         {tab==="chat"    && <ChatIA transactions={data.transactions} fixedExpenses={data.fixedExpenses} goals={data.goals} avatars={data.avatars} people={people}/>}
@@ -1543,8 +1597,8 @@ export default function App() {
                 onAddCategory={addCategory}
                 onUpdateCategory={updateCategory}
                 onDeleteCategory={deleteCategory}
-                billAlertsEnabled={billAlertsEnabled}
-                onToggleBillAlerts={toggleBillAlerts}
+                features={features}
+                onToggleFeature={toggleFeature}
                 onLogout={logout}
               />
             : <AdminPanel auth={auth} currentUser={publicUser(currentUser)} data={data} onCreateUser={createUser} onDeleteUser={deleteUser} onLogout={logout}/>
@@ -1819,7 +1873,7 @@ function OnlineWorkspaceGate({ user, onCreateWorkspace, onAcceptInvite, onLogout
   );
 }
 
-function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, lastSyncedAt, onCreateInvite, onRefresh, onAddCategory, onUpdateCategory, onDeleteCategory, billAlertsEnabled, onToggleBillAlerts, onLogout }) {
+function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, lastSyncedAt, onCreateInvite, onRefresh, onAddCategory, onUpdateCategory, onDeleteCategory, features={}, onToggleFeature, onLogout }) {
   const [role, setRole] = useState("member");
   const [invite, setInvite] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -1926,16 +1980,25 @@ function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, l
       <ShareAppCard/>
 
       <Card style={{marginBottom:14}}>
-        <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <div style={{width:38,height:38,borderRadius:11,background:C.amberPale,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><Bell size={17} color={C.amber}/></div>
-          <div style={{flex:1,minWidth:0}}>
-            <div style={{fontFamily:F.display,fontSize:15,fontWeight:600}}>Avisos de contas</div>
-            <div style={{fontSize:11.5,color:C.muted,lineHeight:1.4}}>Alerta ao abrir o app quando há conta perto de vencer.</div>
-          </div>
-          <button onClick={()=>onToggleBillAlerts&&onToggleBillAlerts(!billAlertsEnabled)} style={{width:50,height:28,borderRadius:99,border:"none",background:billAlertsEnabled?C.green:C.border,cursor:"pointer",position:"relative",flexShrink:0,transition:"background .2s"}}>
-            <div style={{position:"absolute",top:3,left:billAlertsEnabled?25:3,width:22,height:22,borderRadius:99,background:"#fff",transition:"left .2s",boxShadow:"0 1px 3px rgba(0,0,0,0.2)"}}/>
-          </button>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+          <BadgeDollarSign size={17} color={C.caramelDeep}/>
+          <div style={{fontFamily:F.display,fontSize:17,fontWeight:600}}>Módulos do app</div>
         </div>
+        <div style={{fontSize:12,color:C.muted,marginBottom:10,lineHeight:1.5}}>Ligue ou desligue cada recurso. O que estiver ligado aparece pra todo mundo deste espaço.</div>
+        {Object.keys(FEATURE_LABELS).map(key=>{
+          const on = features[key]!==false;
+          return (
+            <div key={key} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderTop:`1px solid ${C.hairline}`}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontWeight:700,fontSize:13.5}}>{FEATURE_LABELS[key].nome}</div>
+                <div style={{fontSize:11,color:C.muted,lineHeight:1.4}}>{FEATURE_LABELS[key].desc}</div>
+              </div>
+              <button onClick={()=>onToggleFeature&&onToggleFeature(key, !on)} style={{width:50,height:28,borderRadius:99,border:"none",background:on?C.green:C.border,cursor:"pointer",position:"relative",flexShrink:0,transition:"background .2s"}}>
+                <div style={{position:"absolute",top:3,left:on?25:3,width:22,height:22,borderRadius:99,background:"#fff",transition:"left .2s",boxShadow:"0 1px 3px rgba(0,0,0,0.2)"}}/>
+              </button>
+            </div>
+          );
+        })}
       </Card>
 
       <CategoriesManager customCategories={data.customCategories||[]} onAddCategory={onAddCategory} onUpdateCategory={onUpdateCategory} onDeleteCategory={onDeleteCategory}/>
@@ -2318,7 +2381,29 @@ function AdminPanel({ auth, currentUser, data, onCreateUser, onDeleteUser, onLog
 /* ═══════════════════════════════════════════════
    DASHBOARD
 ═══════════════════════════════════════════════ */
-function Dashboard({ tx, allTx, month, fixed, avatars, people=[], customCategories=[], onNewAI, onNewNota, onNewManual, onOpenReports, onAddFixed, onUpdateFixed, onDeleteFixed, onTogglePaid }) {
+function InsightsCard({ allTx, month }) {
+  const insights = buildInsights(allTx, month);
+  const bg = { good:C.greenPale, bad:C.redPale, warn:C.amberPale, info:C.bluePale };
+  const bd = { good:"rgba(15,118,110,0.16)", bad:"rgba(179,64,47,0.14)", warn:"rgba(201,150,46,0.2)", info:"rgba(37,99,168,0.14)" };
+  return (
+    <Card style={{marginBottom:16}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+        <div style={{width:34,height:34,borderRadius:10,background:C.greenPale,display:"flex",alignItems:"center",justifyContent:"center"}}><BrainCircuit size={17} color={C.caramelDeep}/></div>
+        <div style={{fontFamily:F.display,fontSize:17,fontWeight:600}}>Insights de economia</div>
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        {insights.map((it,i)=>(
+          <div key={i} style={{display:"flex",gap:9,alignItems:"flex-start",background:bg[it.tone]||C.bgAlt,border:`1px solid ${bd[it.tone]||C.border}`,borderRadius:12,padding:"10px 12px"}}>
+            <span style={{fontSize:16,flexShrink:0}}>{it.emoji}</span>
+            <span style={{fontSize:12.5,lineHeight:1.45,color:C.ink}}>{it.text}</span>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function Dashboard({ tx, allTx, month, fixed, avatars, people=[], customCategories=[], features={}, onNewAI, onNewNota, onNewManual, onOpenReports, onAddFixed, onUpdateFixed, onDeleteFixed, onTogglePaid }) {
   const [calOpen, setCalOpen] = useState(false);
   const [fixOpen, setFixOpen] = useState(false);
 
@@ -2401,6 +2486,8 @@ function Dashboard({ tx, allTx, month, fixed, avatars, people=[], customCategori
           </button>
         ))}
       </div>
+
+      {features.insights!==false && tx.length>0 && <InsightsCard allTx={allTx} month={month}/>}
 
       {tx.length===0 ? (
         <Card style={{textAlign:"center",padding:44}}>
