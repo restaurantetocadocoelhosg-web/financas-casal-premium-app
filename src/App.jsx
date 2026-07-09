@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "3.1";
+const APP_VERSION = "3.2";
 // Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
 const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
 // URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
@@ -673,13 +673,13 @@ function detectPayment(text) {
 
 // ── IA DE VERDADE (Claude Haiku via n8n) — interpreta a frase e devolve o lançamento ──
 const IA_WEBHOOK = "https://n8n-production-806f.up.railway.app/webhook/prosperidade-ia";
-async function callHaiku(texto, { hoje, pessoas, categorias, pagamentos, sinonimos }) {
+async function callHaiku(texto, { hoje, pessoas, categorias, pagamentos, sinonimos, imagem }) {
   const ctrl = new AbortController();
-  const to = setTimeout(()=>ctrl.abort(), 25000);
+  const to = setTimeout(()=>ctrl.abort(), imagem ? 40000 : 25000);
   try {
     const r = await fetch(IA_WEBHOOK, {
       method:"POST", headers:{ "content-type":"application/json" }, signal:ctrl.signal,
-      body: JSON.stringify({ texto, hoje, pessoas, categorias, pagamentos, sinonimos }),
+      body: JSON.stringify({ texto, hoje, pessoas, categorias, pagamentos, sinonimos, imagem }),
     });
     const d = await r.json();
     return (d && d.ok && d.tx) ? d.tx : null;
@@ -1621,10 +1621,10 @@ export default function App() {
         {/* ── HEADER ── */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}}>
           <div>
-            <Eyebrow>{greeting()}</Eyebrow>
-            <div style={{fontFamily:F.display,fontSize:26,fontWeight:600,letterSpacing:0,lineHeight:1.1}}>
+            <div style={{fontFamily:F.display,fontSize:26,fontWeight:600,letterSpacing:0,lineHeight:1.05}}>
               <em style={{color:C.caramelDeep}}>Prosperidade</em>
             </div>
+            <div style={{fontSize:12.5,color:C.muted,fontWeight:600,marginTop:2}}>{greeting()}, {effectiveUser?.name || people[0] || "bem-vindo"}</div>
           </div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
             <button onClick={()=>setSearchOpen(true)} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:10,cursor:"pointer",display:"flex",boxShadow:C.shadowSm}}>
@@ -1705,7 +1705,7 @@ export default function App() {
 
       {/* ── MODAIS ── */}
       {aiOpen     && <AISheet defaultPerson={person==="Todos"?people[0]:person} people={people} avatars={data.avatars} customCategories={data.customCategories} sinonimos={data.sinonimos} onLearn={addSinonimo} onAddCategory={addCategory} onClose={()=>setAiOpen(false)} onConfirm={(tx)=>{addTx(tx);setAiOpen(false);}} onOpenNota={()=>{setAiOpen(false);setNotaOpen(true);}}/>}
-      {notaOpen   && <NotaSheet defaultPerson={person==="Todos"?people[0]:person} people={people} avatars={data.avatars} customCategories={data.customCategories} onAddCategory={addCategory} onClose={()=>setNotaOpen(false)} onConfirm={(tx,foto)=>{addTx(tx,foto);setNotaOpen(false);}}/>}
+      {notaOpen   && <NotaSheet defaultPerson={person==="Todos"?people[0]:person} people={people} avatars={data.avatars} customCategories={data.customCategories} sinonimos={data.sinonimos} onAddCategory={addCategory} onClose={()=>setNotaOpen(false)} onConfirm={(tx,foto)=>{addTx(tx,foto);setNotaOpen(false);}}/>}
       {editing    && <EditSheet tx={editing} avatars={data.avatars} people={people} customCategories={data.customCategories} onAddCategory={addCategory} onClose={()=>setEditing(null)} onSave={(tx,foto,fotoRemovida)=>{tx.id?updateTx(tx,foto,fotoRemovida):addTx(tx,foto);setEditing(null);}}/>}
       {searchOpen && <SearchModal transactions={data.transactions} avatars={data.avatars} customCategories={data.customCategories} onClose={()=>setSearchOpen(false)} onEdit={t=>{setSearchOpen(false);setEditing(t);}} onDelete={deleteTx} onViewPhoto={setPhotoView}/>}
       {profileOpen&& <ProfileSheet avatars={data.avatars} people={people} onSetAvatar={setAvatar} onClose={()=>setProfileOpen(false)}/>}
@@ -2284,14 +2284,19 @@ function CategoriesManager({ customCategories=[], onAddCategory, onUpdateCategor
 function ShareAppCard() {
   const [copied, setCopied] = useState(false);
   const appUrl = typeof window !== "undefined" ? `${window.location.origin}${window.location.pathname}` : "";
-  const msg = `Estou usando o Prosperidade pra organizar minhas finanças — é de graça e bem simples. Se quiser ter a SUA área (separada da minha, só sua): ${appUrl}`;
+  const texto = "Estou usando o Prosperidade pra organizar minhas finanças — de graça e bem simples. Crie a SUA área (separada da minha, só sua):";
 
-  const share = async () => {
-    try {
-      await navigator.clipboard.writeText(msg);
-      setCopied(true);
-      setTimeout(()=>setCopied(false),1800);
-    } catch {}
+  // Compartilhar nativo (WhatsApp/e-mail) manda o link clicável certinho.
+  const compartilhar = async () => {
+    if (navigator.share) {
+      try { await navigator.share({ title:"Prosperidade", text: texto, url: appUrl }); }
+      catch {}
+      return;
+    }
+    copiar();
+  };
+  const copiar = async () => {
+    try { await navigator.clipboard.writeText(`${texto}\n${appUrl}`); setCopied(true); setTimeout(()=>setCopied(false),1800); } catch {}
   };
 
   return (
@@ -2301,9 +2306,10 @@ function ShareAppCard() {
         <div style={{fontFamily:F.display,fontSize:17,fontWeight:600}}>Indicar o app pra alguém</div>
       </div>
       <div style={{fontSize:12,color:C.muted,marginBottom:12,lineHeight:1.5}}>Essa pessoa cria a PRÓPRIA área, 100% separada da sua — ela não vê nada do que está aqui, e você não vê nada dela.</div>
-      <Btn variant="outline" style={{width:"100%"}} onClick={share}>
-        <Copy size={14}/> {copied ? "Copiado!" : "Copiar mensagem de convite"}
-      </Btn>
+      <div style={{display:"flex",gap:8}}>
+        <Btn variant="gold" style={{flex:2}} onClick={compartilhar}><Send size={14}/> Compartilhar</Btn>
+        <Btn variant="outline" style={{flex:1}} onClick={copiar}><Copy size={14}/> {copied ? "Copiado!" : "Copiar"}</Btn>
+      </div>
     </Card>
   );
 }
@@ -3282,10 +3288,11 @@ function AISheet({ onClose, onConfirm, defaultPerson, people=[], avatars, custom
 /* ═══════════════════════════════════════════════
    NOTA FISCAL / RECIBO COM FOTO
 ═══════════════════════════════════════════════ */
-function NotaSheet({ onClose, onConfirm, defaultPerson, people=[], avatars, customCategories=[], onAddCategory }) {
+function NotaSheet({ onClose, onConfirm, defaultPerson, people=[], avatars, customCategories=[], sinonimos={}, onAddCategory }) {
   const [foto, setFoto] = useState(null);
   const [pending, setPending] = useState(null);
   const [error, setError] = useState("");
+  const [lendo, setLendo] = useState(false);
   const fileRef = useRef(null);
 
   const pick = async (e) => {
@@ -3296,18 +3303,19 @@ function NotaSheet({ onClose, onConfirm, defaultPerson, people=[], avatars, cust
     catch{ setError("Não consegui carregar a imagem."); }
   };
 
-  const criarLancamento = () => {
+  const brancoManual = () => ({ tipo:"gasto", valor:"", categoria:"Mercado", descricao:"Nota fiscal / recibo", pagamento:"Pix", pessoa:defaultPerson, data:todayISO(), necessario:true });
+
+  const criarLancamento = async () => {
     if(!foto) return;
-    setPending({
-      tipo:"gasto",
-      valor:"",
-      categoria:"Mercado",
-      descricao:"Nota fiscal / recibo",
-      pagamento:"Pix",
-      pessoa:defaultPerson,
-      data:todayISO(),
-      necessario:true,
-    });
+    setLendo(true); setError("");
+    try {
+      // IA lê a foto da nota e preenche sozinha (valor, data, estabelecimento…)
+      const categorias = [...new Set([...catsForTipo("gasto",customCategories), ...catsForTipo("ganho",customCategories)])];
+      const ai = await callHaiku("", { hoje:todayISO(), pessoas:people, categorias, pagamentos:PAYMENTS, sinonimos, imagem:foto });
+      if (ai) setPending(normalizeAiTx(ai, defaultPerson, people, customCategories));
+      else setPending(brancoManual());
+    } catch { setPending(brancoManual()); }
+    setLendo(false);
   };
 
   return (
@@ -3321,7 +3329,7 @@ function NotaSheet({ onClose, onConfirm, defaultPerson, people=[], avatars, cust
                 <Camera size={26} color={C.caramelDeep}/>
               </div>
               <div style={{fontFamily:F.display,fontSize:17,fontWeight:600,color:C.caramelDeep}}>Fotografar recibo</div>
-              <div style={{fontSize:12.5,color:C.muted,fontFamily:F.body}}>A foto fica anexada ao lançamento para conferência</div>
+              <div style={{fontSize:12.5,color:C.muted,fontFamily:F.body,textAlign:"center",lineHeight:1.4}}>A IA lê a nota e preenche sozinha — você só confere. A foto fica anexada.</div>
             </button>
           ):(
             <>
@@ -3331,10 +3339,10 @@ function NotaSheet({ onClose, onConfirm, defaultPerson, people=[], avatars, cust
               </div>
               {error&&<div style={{color:C.red,fontSize:12.5,marginBottom:10}}>{error}</div>}
               <div style={{display:"flex",gap:8}}>
-                <Btn variant="outline" onClick={()=>fileRef.current?.click()} style={{flex:1}}><Camera size={15}/> Trocar</Btn>
-                <Btn variant="gold" onClick={criarLancamento} style={{flex:2}}>
-                  <Pencil size={16}/>
-                  Preencher dados
+                <Btn variant="outline" onClick={()=>fileRef.current?.click()} disabled={lendo} style={{flex:1}}><Camera size={15}/> Trocar</Btn>
+                <Btn variant="gold" onClick={criarLancamento} disabled={lendo} style={{flex:2}}>
+                  {lendo ? <Loader2 size={16} style={{animation:"spin 1s linear infinite"}}/> : <Sparkles size={16} color={C.gold}/>}
+                  {lendo ? "Lendo a nota…" : "Ler recibo com IA"}
                 </Btn>
               </div>
             </>
@@ -3342,7 +3350,7 @@ function NotaSheet({ onClose, onConfirm, defaultPerson, people=[], avatars, cust
         </>
       ):(
         <>
-          <TxForm tx={pending} avatars={avatars} people={people} customCategories={customCategories} onAddCategory={onAddCategory} onChange={setPending} onCancel={()=>setPending(null)} onSave={()=>onConfirm({...pending,valor:Number(pending.valor)}, foto)} saveLabel="Salvar com a foto"/>
+          <TxForm tx={pending} avatars={avatars} people={people} customCategories={customCategories} onAddCategory={onAddCategory} onChange={setPending} onCancel={()=>setPending(null)} onSave={()=>{const{_duvida,_confianca,...limpo}=pending;onConfirm({...limpo,valor:Number(limpo.valor)}, foto);}} saveLabel="Salvar com a foto"/>
         </>
       )}
     </Sheet>
