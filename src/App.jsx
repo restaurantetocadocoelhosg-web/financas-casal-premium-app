@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "2.3";
+const APP_VERSION = "2.4";
 // v-multi-tenant: nomes NAO sao mais fixos (cada workspace tem os seus, vindos de finance_members).
 // Cor por pessoa: hash estavel do nome -> mesma cor sempre, sem precisar saber a lista toda.
 const PESSOA_CASAL = "Casal";
@@ -361,9 +361,25 @@ const txToRow    = (t, ws) => ({ id:t.id, workspace_id:ws, tipo:t.tipo, valor:Nu
 const rowToTx    = (r) => ({ id:r.id, tipo:r.tipo, valor:Number(r.valor)||0, categoria:r.categoria||"", descricao:r.descricao||"", pagamento:r.pagamento||"", pessoa:r.pessoa||"", data:r.data||"", necessario:r.necessario!==false, foto:!!r.foto });
 const goalToRow  = (g, ws) => ({ id:g.id, workspace_id:ws, nome:g.nome||"", emoji:g.emoji||"🎯", alvo:Number(g.alvo)||0, saved:Number(g.saved)||0, prazo:g.prazo||null, deposits:g.deposits||[] });
 const rowToGoal  = (r) => ({ id:r.id, nome:r.nome||"", emoji:r.emoji||"🎯", alvo:Number(r.alvo)||0, saved:Number(r.saved)||0, prazo:r.prazo||"", deposits:Array.isArray(r.deposits)?r.deposits:[] });
-const fixedToRow = (f, ws) => ({ id:f.id, workspace_id:ws, nome:f.nome||"", valor:Number(f.valor)||0, dia:Number(f.dia)||1, categoria:f.categoria||"", paid_months:Array.isArray(f.paidMonths)?f.paidMonths:[] });
-const rowToFixed = (r) => ({ id:r.id, nome:r.nome||"", valor:Number(r.valor)||0, dia:Number(r.dia)||1, categoria:r.categoria||"", paidMonths:Array.isArray(r.paid_months)?r.paid_months:[] });
+const fixedToRow = (f, ws) => ({ id:f.id, workspace_id:ws, nome:f.nome||"", valor:Number(f.valor)||0, dia:Number(f.dia)||1, categoria:f.categoria||"", paid_months:Array.isArray(f.paidMonths)?f.paidMonths:[], variavel:!!f.variavel });
+const rowToFixed = (r) => ({ id:r.id, nome:r.nome||"", valor:Number(r.valor)||0, dia:Number(r.dia)||1, categoria:r.categoria||"", paidMonths:Array.isArray(r.paid_months)?r.paid_months:[], variavel:!!r.variavel });
 const curMonthKey = () => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; };
+
+// Frases motivacionais que variam a cada alerta (nunca a mesma sempre).
+const MOTIVA_FRASES = [
+  "Cada conta em dia é um passo pra sua tranquilidade. 💪",
+  "Organização hoje, liberdade amanhã. Você consegue!",
+  "Pequenos hábitos constroem grandes conquistas. 🌱",
+  "Controlar o dinheiro é controlar o próprio futuro. 🚀",
+  "Está preparado pra esse desafio? Você já venceu metade só de acompanhar. 🔥",
+  "Contas em ordem, mente em paz. Bora! ✨",
+  "Quem cuida do pouco, conquista o muito. 💰",
+  "Disciplina é a ponte entre metas e realizações. 🌉",
+  "Cada real organizado te aproxima do seu sonho. ⭐",
+  "Hoje é um ótimo dia pra cuidar do que importa. 🙌",
+];
+const fraseMotivacional = () => MOTIVA_FRASES[Math.floor(Math.random()*MOTIVA_FRASES.length)];
+const BILL_ALERTS_KEY = "prosperidade-bill-alerts"; // preferência local (ligar/desligar avisos)
 
 // Junta categorias base + as criadas pelo admin (custom vêm antes de "Outros").
 function catsForTipo(tipo, custom=[]) {
@@ -803,6 +819,8 @@ export default function App() {
   const [reportOpen, setReportOpen] = useState(false);
   const [photoView, setPhotoView] = useState(null);
   const [billsAlertDismissed, setBillsAlertDismissed] = useState(false);
+  const [billAlertsEnabled, setBillAlertsEnabled] = useState(()=>{ try { return localStorage.getItem(BILL_ALERTS_KEY) !== "off"; } catch { return true; } });
+  const toggleBillAlerts = useCallback((on)=>{ setBillAlertsEnabled(on); try { localStorage.setItem(BILL_ALERTS_KEY, on?"on":"off"); } catch {} },[]);
   const [toast, setToast] = useState(null);
   const [onlineUser, setOnlineUser] = useState(null);
   const [onlineWorkspace, setOnlineWorkspace] = useState(null);
@@ -1290,7 +1308,7 @@ export default function App() {
     if (online) await supabase.from("finance_goals").delete().eq("id", id);
   },[patchData,online,wsId]);
   const addFixed = useCallback(async (f)=>{
-    const fixed = {...f, id:uid(), valor:Number(f.valor)||0, dia:Number(f.dia)||1, paidMonths:[]};
+    const fixed = {...f, id:uid(), valor:Number(f.valor)||0, dia:Number(f.dia)||1, variavel:!!f.variavel, paidMonths:[]};
     patchData(d=>({...d, fixedExpenses:[...d.fixedExpenses, fixed]}));
     showToast("Conta fixa salva ✓");
     if (online) await supabase.from("finance_fixed").insert(fixedToRow(fixed, wsId));
@@ -1419,14 +1437,20 @@ export default function App() {
 
   const newManualTx = ()=>setEditing({tipo:"gasto",valor:"",categoria:"Mercado",descricao:"",pagamento:"Pix",pessoa:person==="Todos"?people[0]:person,data:todayISO(),necessario:true});
 
-  // Contas fixas vencidas/vencendo (não pagas no mês) → alerta ao abrir o app.
+  // Contas fixas vencidas/vencendo em até 7 dias (não pagas no mês) → alerta ao abrir.
   const billsDue = (()=>{
+    if (!billAlertsEnabled) return [];
     const mk = curMonthKey();
     const hoje = new Date().getDate();
     return data.fixedExpenses
-      .filter(f=>!(f.paidMonths||[]).includes(mk) && Number(f.dia) <= hoje + 3)
+      .filter(f=>!(f.paidMonths||[]).includes(mk) && Number(f.dia) <= hoje + 7)
       .sort((a,b)=>Number(a.dia)-Number(b.dia));
   })();
+  // Meta perto de ser batida (≥80% e <100%) → empurrãozinho motivacional no alerta.
+  const goalNudge = data.goals.find(g=>{
+    const pct = g.alvo>0 ? (Number(g.saved||0)/Number(g.alvo))*100 : 0;
+    return pct>=80 && pct<100;
+  }) || null;
 
   return (
     <div style={{minHeight:"100vh",background:C.bg,color:C.ink,fontFamily:F.body,paddingBottom:104}}>
@@ -1492,6 +1516,8 @@ export default function App() {
                 onAddCategory={addCategory}
                 onUpdateCategory={updateCategory}
                 onDeleteCategory={deleteCategory}
+                billAlertsEnabled={billAlertsEnabled}
+                onToggleBillAlerts={toggleBillAlerts}
                 onLogout={logout}
               />
             : <AdminPanel auth={auth} currentUser={publicUser(currentUser)} data={data} onCreateUser={createUser} onDeleteUser={deleteUser} onLogout={logout}/>
@@ -1520,7 +1546,7 @@ export default function App() {
       {profileOpen&& <ProfileSheet avatars={data.avatars} people={people} onSetAvatar={setAvatar} onClose={()=>setProfileOpen(false)}/>}
       {reportOpen && <ReportSheet data={data} month={month} person={person} onClose={()=>setReportOpen(false)} onImport={importData}/>}
       {photoView  && <PhotoViewer txId={photoView} onClose={()=>setPhotoView(null)}/>}
-      {!billsAlertDismissed && billsDue.length>0 && <BillsAlert bills={billsDue} customCategories={data.customCategories} onPaid={toggleFixedPaid} onClose={()=>setBillsAlertDismissed(true)}/>}
+      {!billsAlertDismissed && billsDue.length>0 && <BillsAlert bills={billsDue} goalNudge={goalNudge} customCategories={data.customCategories} onPaid={toggleFixedPaid} onClose={()=>setBillsAlertDismissed(true)}/>}
 
       {toast && (
         <div style={{position:"fixed",bottom:104,left:"50%",transform:"translateX(-50%)",background:C.ink,color:C.goldPale,padding:"11px 22px",borderRadius:999,fontSize:13,fontWeight:700,zIndex:99,whiteSpace:"nowrap",boxShadow:"0 6px 24px rgba(0,0,0,0.25)",animation:"toastIn .3s ease",fontFamily:F.body}}>
@@ -1766,7 +1792,7 @@ function OnlineWorkspaceGate({ user, onCreateWorkspace, onAcceptInvite, onLogout
   );
 }
 
-function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, lastSyncedAt, onCreateInvite, onRefresh, onAddCategory, onUpdateCategory, onDeleteCategory, onLogout }) {
+function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, lastSyncedAt, onCreateInvite, onRefresh, onAddCategory, onUpdateCategory, onDeleteCategory, billAlertsEnabled, onToggleBillAlerts, onLogout }) {
   const [role, setRole] = useState("member");
   const [invite, setInvite] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -1871,6 +1897,19 @@ function OnlineAdminPanel({ currentUser, workspace, members, data, syncStatus, l
       </Card>
 
       <ShareAppCard/>
+
+      <Card style={{marginBottom:14}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{width:38,height:38,borderRadius:11,background:C.amberPale,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><Bell size={17} color={C.amber}/></div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontFamily:F.display,fontSize:15,fontWeight:600}}>Avisos de contas</div>
+            <div style={{fontSize:11.5,color:C.muted,lineHeight:1.4}}>Alerta ao abrir o app quando há conta perto de vencer.</div>
+          </div>
+          <button onClick={()=>onToggleBillAlerts&&onToggleBillAlerts(!billAlertsEnabled)} style={{width:50,height:28,borderRadius:99,border:"none",background:billAlertsEnabled?C.green:C.border,cursor:"pointer",position:"relative",flexShrink:0,transition:"background .2s"}}>
+            <div style={{position:"absolute",top:3,left:billAlertsEnabled?25:3,width:22,height:22,borderRadius:99,background:"#fff",transition:"left .2s",boxShadow:"0 1px 3px rgba(0,0,0,0.2)"}}/>
+          </button>
+        </div>
+      </Card>
 
       <CategoriesManager customCategories={data.customCategories||[]} onAddCategory={onAddCategory} onUpdateCategory={onUpdateCategory} onDeleteCategory={onDeleteCategory}/>
 
@@ -2515,7 +2554,7 @@ function FinCalendar({ tx, month, avatars, customCategories=[] }) {
 
 /* ── GASTOS FIXOS ── */
 function FixedSection({ fixed, onAdd, onUpdate, onDelete, onTogglePaid, customCategories=[] }) {
-  const empty = {nome:"",valor:"",dia:1,categoria:"Energia"};
+  const empty = {nome:"",valor:"",dia:1,categoria:"Energia",variavel:false};
   const [form, setForm] = useState(empty);
   const [editId, setEditId] = useState(null); // id em edição, ou "new", ou null
   const total = fixed.reduce((s,f)=>s+Number(f.valor),0);
@@ -2524,7 +2563,7 @@ function FixedSection({ fixed, onAdd, onUpdate, onDelete, onTogglePaid, customCa
   const ordenadas = [...fixed].sort((a,b)=>Number(a.dia)-Number(b.dia));
 
   const abrirNovo = () => { setForm(empty); setEditId("new"); };
-  const abrirEdicao = (f) => { setForm({nome:f.nome,valor:String(f.valor),dia:f.dia,categoria:f.categoria}); setEditId(f.id); };
+  const abrirEdicao = (f) => { setForm({nome:f.nome,valor:String(f.valor),dia:f.dia,categoria:f.categoria,variavel:!!f.variavel}); setEditId(f.id); };
   const salvar = () => {
     if (!form.nome || !form.valor) return;
     if (editId==="new") onAdd(form);
@@ -2545,12 +2584,12 @@ function FixedSection({ fixed, onAdd, onUpdate, onDelete, onTogglePaid, customCa
             <button onClick={()=>onTogglePaid&&onTogglePaid(f.id, !pago)} title={pago?"Marcar como não pago":"Marcar como pago"} style={{background:pago?C.green:"transparent",border:`1.5px solid ${pago?C.green:C.border}`,borderRadius:8,width:24,height:24,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,padding:0}}>
               {pago&&<Check size={14} color="#fff"/>}
             </button>
-            <div style={{fontSize:17}}>{EMOJI[f.categoria]||emojiFor(f.categoria,customCategories)}</div>
+            <div style={{fontSize:17}}>{f.variavel?"💳":(EMOJI[f.categoria]||emojiFor(f.categoria,customCategories))}</div>
             <div style={{flex:1,minWidth:0}}>
-              <div style={{fontSize:13.5,fontWeight:700,textDecoration:pago?"line-through":"none"}}>{f.nome}</div>
+              <div style={{fontSize:13.5,fontWeight:700,textDecoration:pago?"line-through":"none"}}>{f.nome}{f.variavel&&<span style={{fontSize:9,color:C.plum,background:C.plumPale,borderRadius:99,padding:"1px 5px",marginLeft:5,fontWeight:800}}>cartão</span>}</div>
               <div style={{fontSize:10.5,color:statusCor,fontWeight:700}}>{statusTxt}</div>
             </div>
-            <div style={{fontFamily:F.display,fontSize:14.5,fontWeight:600,color:C.plum}}>{fmt(f.valor)}</div>
+            <div style={{fontFamily:F.display,fontSize:14.5,fontWeight:600,color:C.plum}}>{f.variavel?"~"+fmt(f.valor):fmt(f.valor)}</div>
             <button onClick={()=>abrirEdicao(f)} style={{background:"none",border:"none",cursor:"pointer",padding:4,color:C.faint,display:"flex"}}><Pencil size={13}/></button>
             <button onClick={()=>{if(window.confirm("Excluir esta conta fixa?"))onDelete(f.id)}} style={{background:"none",border:"none",cursor:"pointer",padding:4,color:C.faint,display:"flex"}}><Trash2 size={13}/></button>
           </div>
@@ -2571,6 +2610,10 @@ function FixedSection({ fixed, onAdd, onUpdate, onDelete, onTogglePaid, customCa
             </div>
             <Select value={form.categoria} onChange={e=>setForm({...form,categoria:e.target.value})} style={{flex:1.4}}>{catsForTipo("gasto",customCategories).map(c=><option key={c} value={c}>{c}</option>)}</Select>
           </div>
+          <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:12,color:C.inkSoft,fontWeight:600}}>
+            <input type="checkbox" checked={!!form.variavel} onChange={e=>setForm({...form,variavel:e.target.checked})} style={{width:15,height:15}}/>
+            💳 É cartão de crédito (vence todo mês, valor varia)
+          </label>
           <div style={{display:"flex",gap:8}}>
             <Btn variant="outline" small onClick={()=>{setEditId(null);setForm(empty);}} style={{flex:1}}>Cancelar</Btn>
             <Btn variant="gold" small onClick={salvar} disabled={!form.nome||!(Number(form.valor)>0)} style={{flex:2}}><Check size={14}/> Salvar</Btn>
@@ -2627,14 +2670,16 @@ function Extrato({ tx, avatars, customCategories=[], onDelete, onEdit, onViewPho
   );
 }
 
-/* ── ALERTA DE CONTAS A PAGAR (abre ao entrar no app) ── */
-function BillsAlert({ bills, customCategories=[], onPaid, onClose }) {
+/* ── ALERTA DE CONTAS A PAGAR (abre ao entrar no app, com frase motivacional) ── */
+function BillsAlert({ bills, goalNudge, customCategories=[], onPaid, onClose }) {
   const hoje = new Date().getDate();
   const total = bills.reduce((s,f)=>s+Number(f.valor),0);
+  const [frase] = useState(fraseMotivacional); // uma frase por abertura, variando
+  const goalPct = goalNudge && goalNudge.alvo>0 ? Math.min(Number(goalNudge.saved||0)/Number(goalNudge.alvo)*100,100) : 0;
   return (
     <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(42,32,24,0.42)",backdropFilter:"blur(5px)",zIndex:70,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
-      <div className="su" onClick={e=>e.stopPropagation()} style={{width:"100%",maxWidth:420,background:C.surface,borderRadius:24,border:`1px solid ${C.border}`,padding:20,maxHeight:"85vh",overflowY:"auto",boxShadow:C.shadow}}>
-        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+      <div className="su" onClick={e=>e.stopPropagation()} style={{width:"100%",maxWidth:420,background:C.surface,borderRadius:24,border:`1px solid ${C.border}`,padding:20,maxHeight:"88vh",overflowY:"auto",boxShadow:C.shadow}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
           <div style={{width:42,height:42,borderRadius:12,background:C.amberPale,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><Bell size={20} color={C.amber}/></div>
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontFamily:F.display,fontSize:19,fontWeight:600}}>Contas a pagar</div>
@@ -2642,21 +2687,32 @@ function BillsAlert({ bills, customCategories=[], onPaid, onClose }) {
           </div>
           <button onClick={onClose} style={{background:C.bgAlt,border:"none",borderRadius:99,width:30,height:30,cursor:"pointer",color:C.muted,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><X size={15}/></button>
         </div>
+        <div style={{background:C.greenPale,border:`1px solid rgba(15,118,110,0.14)`,borderRadius:14,padding:"11px 13px",marginBottom:12,fontSize:13,color:C.caramelDeep,fontWeight:600,lineHeight:1.45}}>{frase}</div>
         {bills.map(f=>{
           const atrasada = Number(f.dia)<hoje, venceHoje = Number(f.dia)===hoje;
+          const faltam = Number(f.dia)-hoje;
+          const quando = atrasada?`Venceu dia ${f.dia}`:venceHoje?"Vence hoje!":`Vence em ${faltam} dia${faltam>1?"s":""} (dia ${f.dia})`;
           return (
             <div key={f.id} style={{display:"flex",alignItems:"center",gap:10,padding:"11px 0",borderTop:`1px solid ${C.hairline}`}}>
-              <div style={{fontSize:20,flexShrink:0}}>{EMOJI[f.categoria]||emojiFor(f.categoria,customCategories)}</div>
+              <div style={{fontSize:20,flexShrink:0}}>{f.variavel?"💳":(EMOJI[f.categoria]||emojiFor(f.categoria,customCategories))}</div>
               <div style={{flex:1,minWidth:0}}>
-                <div style={{fontWeight:700,fontSize:14,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{f.nome}</div>
+                <div style={{fontWeight:700,fontSize:14,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{f.nome}{f.variavel&&<span style={{fontSize:9.5,color:C.plum,background:C.plumPale,borderRadius:99,padding:"1px 6px",marginLeft:6,fontWeight:800}}>cartão</span>}</div>
                 <div style={{fontSize:11,fontWeight:700,color:atrasada?C.red:venceHoje?C.amber:C.muted}}>
-                  {atrasada?`Venceu dia ${f.dia}`:venceHoje?"Vence hoje!":`Vence dia ${f.dia}`} · {fmt(f.valor)}
+                  {quando} · {f.variavel?"valor varia":fmt(f.valor)}
                 </div>
               </div>
               <Btn variant="gold" small onClick={()=>onPaid(f.id, true)}><Check size={13}/> Já paguei</Btn>
             </div>
           );
         })}
+        {goalNudge&&(
+          <div style={{marginTop:12,background:C.goldPale,border:`1px solid rgba(201,150,46,0.2)`,borderRadius:14,padding:"11px 13px",display:"flex",alignItems:"center",gap:10}}>
+            <div style={{fontSize:22}}>{goalNudge.emoji||"🎯"}</div>
+            <div style={{fontSize:12.5,color:C.ink,lineHeight:1.4}}>
+              Sua meta <b>{goalNudge.nome}</b> já está em <b>{goalPct.toFixed(0)}%</b>! Falta pouco pra conquistar. 🚀
+            </div>
+          </div>
+        )}
         <Btn variant="outline" onClick={onClose} style={{width:"100%",marginTop:14}}>Ver depois</Btn>
       </div>
     </div>
