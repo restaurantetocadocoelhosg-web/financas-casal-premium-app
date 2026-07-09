@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "3.3";
+const APP_VERSION = "3.4";
 // Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
 const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
 // URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
@@ -1662,7 +1662,7 @@ export default function App() {
         {tab==="home"    && <Dashboard tx={txMonth} allTx={data.transactions} month={month} fixed={data.fixedExpenses} avatars={data.avatars} people={people} customCategories={data.customCategories} features={features} onNewAI={()=>setAiOpen(true)} onNewNota={()=>setNotaOpen(true)} onNewManual={newManualTx} onOpenReports={()=>setReportOpen(true)} onAddFixed={addFixed} onUpdateFixed={updateFixed} onDeleteFixed={deleteFixed} onTogglePaid={toggleFixedPaid}/>}
         {tab==="extrato" && <Extrato tx={txMonth} avatars={data.avatars} customCategories={data.customCategories} onDelete={deleteTx} onEdit={setEditing} onViewPhoto={setPhotoView}/>}
         {tab==="metas"   && <Metas goals={data.goals} onAdd={addGoal} onUpdate={updateGoal} onDelete={deleteGoal}/>}
-        {tab==="chat"    && <ChatIA transactions={data.transactions} fixedExpenses={data.fixedExpenses} goals={data.goals} avatars={data.avatars} people={people}/>}
+        {tab==="chat"    && <ChatIA transactions={data.transactions} fixedExpenses={data.fixedExpenses} goals={data.goals} avatars={data.avatars} people={people} customCategories={data.customCategories} sinonimos={data.sinonimos} defaultPerson={person==="Todos"?people[0]:person} onAddTx={addTx} onEditTx={setEditing}/>}
         {tab==="admin"   && effectiveUser?.role==="admin" && (
           SUPABASE_ENABLED
             ? <OnlineAdminPanel
@@ -3538,36 +3538,112 @@ function TxForm({ tx, avatars, people=[], customCategories=[], onAddCategory, on
 /* ═══════════════════════════════════════════════
    AGENTE FINANCEIRO
 ═══════════════════════════════════════════════ */
-function ChatIA({ transactions, fixedExpenses, goals, people=[] }) {
+// Decide se a mensagem do chat é um LANÇAMENTO ("gastei 50 no mercado") ou uma PERGUNTA
+// ("quanto gastei em mercado?"). Pergunta tem prioridade — nunca lançar sem querer.
+function looksLikeLaunch(text){
+  const q = normalize(text);
+  if (/\?/.test(text)) return false;
+  if (/\b(quanto|quantos|quanta|quantas|qual|quais|quando|onde|como|quem|porque|por que)\b/.test(q)) return false;
+  if (/(resumo|resuma|relatorio|economi|cortar|melhor|sobrou|falta|vale a pena|compar|dica|conselho)/.test(q)) return false;
+  const temVerbo = /\b(gastei|gastamos|gastar|paguei|pagamos|comprei|compramos|abasteci|torrei|investi|recebi|recebemos|ganhei|ganhamos|deposit|entrou)\b/.test(q);
+  const temValor = !!detectMoney(text);
+  return temVerbo || temValor;
+}
+
+function ChatIA({ transactions, fixedExpenses, goals, people=[], customCategories=[], sinonimos={}, defaultPerson, onAddTx, onEditTx }) {
   const exemploNome = people[1] || people[0] || "alguém";
-  const [msgs, setMsgs] = useState([{role:"ai",text:`Olá! Sou o agente financeiro.\n\nPergunte, por exemplo:\n• Quanto gastamos em mercado esse mês?\n• Faça um resumo do mês\n• Onde podemos economizar?\n• Quanto ${exemploNome} gastou com delivery?\n• Como estão as metas?`}]);
+  const [msgs, setMsgs] = useState([{role:"ai",text:`Olá! Sou o agente financeiro. Posso responder e também lançar por aqui.\n\nLance direto:\n• Gastei 50 no mercado no Pix\n• Recebi 2000 de salário\n\nOu pergunte:\n• Faça um resumo do mês\n• Onde podemos economizar?\n• Quanto ${exemploNome} gastou com delivery?\n• Como estão as metas?`}]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const endRef = useRef(null);
   useEffect(()=>{endRef.current?.scrollIntoView({behavior:"smooth"});},[msgs,loading]);
+
+  const brDate = iso => { const p = String(iso||"").split("-"); return p.length===3 ? `${p[2]}/${p[1]}/${p[0]}` : iso; };
+
+  // Interpreta a frase como lançamento: Haiku primeiro, regex local como reserva.
+  const parseLaunch = async (texto) => {
+    const categorias = [...new Set([...catsForTipo("gasto",customCategories), ...catsForTipo("ganho",customCategories)])];
+    try {
+      const ai = await callHaiku(texto, { hoje:todayISO(), pessoas:people, categorias, pagamentos:PAYMENTS, sinonimos });
+      if (ai) return normalizeAiTx(ai, defaultPerson, people, customCategories);
+    } catch {}
+    try { return interpretFinancialText(texto, defaultPerson, people); } catch { return null; }
+  };
 
   const send = async () => {
     const q = input.trim();
     if(!q||loading)return;
     setMsgs(m=>[...m,{role:"user",text:q}]); setInput(""); setLoading(true);
     try{
-      const r = answerFinanceQuestion(q, transactions, fixedExpenses, goals, people);
-      setMsgs(m=>[...m,{role:"ai",text:r||"Não consegui responder agora."}]);
-    }catch{ setMsgs(m=>[...m,{role:"ai",text:"Não consegui analisar essa pergunta. Tente pedir resumo, economia, meta, contas fixas ou uma categoria específica."}]); }
+      if (looksLikeLaunch(q)) {
+        const tx = await parseLaunch(q);
+        if (tx && Number(tx.valor)>0) setMsgs(m=>[...m,{role:"confirm",tx}]);
+        else setMsgs(m=>[...m,{role:"ai",text:'Entendi que é um lançamento, mas não achei o valor. Tente assim: "gastei 50 no mercado no Pix" — ou toque no ✨ pra preencher na mão.'}]);
+      } else {
+        const r = answerFinanceQuestion(q, transactions, fixedExpenses, goals, people);
+        setMsgs(m=>[...m,{role:"ai",text:r||"Não consegui responder agora."}]);
+      }
+    }catch{ setMsgs(m=>[...m,{role:"ai",text:'Não consegui analisar agora. Peça um resumo, ou lance assim: "gastei 30 no ifood".'}]); }
     setLoading(false);
   };
+
+  const salvar = (idx, tx) => {
+    const {_duvida,_confianca,...limpo} = tx;
+    onAddTx?.({...limpo, valor:Number(limpo.valor)});
+    setMsgs(m=>m.map((x,i)=>i===idx?{...x,estado:"salvo"}:x));
+  };
+  const ajustar = (idx, tx) => {
+    const {_duvida,_confianca,...limpo} = tx;
+    onEditTx?.({...limpo, valor:Number(limpo.valor)});
+    setMsgs(m=>m.map((x,i)=>i===idx?{...x,estado:"editar"}:x));
+  };
+
+  const avatarBolha = (
+    <div style={{width:32,height:32,borderRadius:999,background:C.greenPale,border:`1.5px solid ${C.caramel}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,flexShrink:0}}><BrainCircuit size={16} color={C.caramelDeep}/></div>
+  );
 
   return (
     <div className="su" style={{display:"flex",flexDirection:"column",height:"calc(100vh - 300px)",minHeight:360}}>
       <div style={{flex:1,overflowY:"auto",paddingBottom:8}}>
-        {msgs.map((m,i)=>(
-          <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start",marginBottom:12,alignItems:"flex-end",gap:8}}>
-            {m.role==="ai"&&<div style={{width:32,height:32,borderRadius:999,background:C.greenPale,border:`1.5px solid ${C.caramel}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,flexShrink:0}}><BrainCircuit size={16} color={C.caramelDeep}/></div>}
-            <div style={{maxWidth:"80%",padding:"11px 15px",borderRadius:18,fontSize:14,lineHeight:1.65,whiteSpace:"pre-wrap",background:m.role==="user"?C.ink:C.surface,color:m.role==="user"?"#F6F1E7":C.ink,border:m.role==="ai"?`1px solid ${C.border}`:"none",boxShadow:m.role==="ai"?C.shadowSm:"none",borderBottomRightRadius:m.role==="user"?4:18,borderBottomLeftRadius:m.role==="user"?18:4}}>
-              {m.text}
+        {msgs.map((m,i)=>{
+          if (m.role==="confirm") {
+            const t = m.tx;
+            const duvida = Array.isArray(t._duvida) ? t._duvida : [];
+            return (
+              <div key={i} style={{display:"flex",justifyContent:"flex-start",marginBottom:12,alignItems:"flex-end",gap:8}}>
+                {avatarBolha}
+                <div style={{maxWidth:"85%",padding:"12px 14px",borderRadius:18,borderBottomLeftRadius:4,fontSize:14,background:C.surface,border:`1px solid ${C.border}`,boxShadow:C.shadowSm}}>
+                  <div style={{color:C.inkSoft,marginBottom:8}}>{t.tipo==="ganho"?"Isso parece um ganho — confere?":"Isso parece um lançamento — confere?"}</div>
+                  <div style={{fontFamily:F.display,fontWeight:600,fontSize:16,color:t.tipo==="ganho"?C.green:C.ink,marginBottom:2}}>
+                    {emojiFor(t.categoria,customCategories)} {t.categoria} · {fmt(Number(t.valor))}
+                  </div>
+                  <div style={{fontSize:12.5,color:C.muted,marginBottom:duvida.length?8:10}}>{t.pessoa} · {brDate(t.data)} · {t.pagamento}</div>
+                  {duvida.length>0 && m.estado!=="salvo" && (
+                    <div style={{fontSize:12,color:C.amber,background:C.amberPale,border:`1px solid rgba(201,150,46,0.25)`,borderRadius:10,padding:"6px 9px",marginBottom:10}}>⚠ Confira: {duvida.join(", ")}</div>
+                  )}
+                  {m.estado==="salvo" ? (
+                    <div style={{fontSize:13,fontWeight:700,color:C.green}}>✓ Lançado</div>
+                  ) : m.estado==="editar" ? (
+                    <div style={{fontSize:13,fontWeight:600,color:C.caramelDeep}}>Abri a tela de ajuste ✏️</div>
+                  ) : (
+                    <div style={{display:"flex",gap:8}}>
+                      <button onClick={()=>salvar(i,t)} style={{flex:1,padding:"9px 12px",borderRadius:12,border:"none",background:C.ink,color:C.gold,fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:F.body}}>Salvar</button>
+                      <button onClick={()=>ajustar(i,t)} style={{flex:1,padding:"9px 12px",borderRadius:12,border:`1.5px solid ${C.border}`,background:C.surface,color:C.inkSoft,fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:F.body}}>Ajustar</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          }
+          return (
+            <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start",marginBottom:12,alignItems:"flex-end",gap:8}}>
+              {m.role==="ai"&&avatarBolha}
+              <div style={{maxWidth:"80%",padding:"11px 15px",borderRadius:18,fontSize:14,lineHeight:1.65,whiteSpace:"pre-wrap",background:m.role==="user"?C.ink:C.surface,color:m.role==="user"?"#F6F1E7":C.ink,border:m.role==="ai"?`1px solid ${C.border}`:"none",boxShadow:m.role==="ai"?C.shadowSm:"none",borderBottomRightRadius:m.role==="user"?4:18,borderBottomLeftRadius:m.role==="user"?18:4}}>
+                {m.text}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
         {loading&&(
           <div style={{display:"flex",alignItems:"center",gap:8,color:C.muted,fontSize:13}}>
             <div style={{width:32,height:32,borderRadius:999,background:C.greenPale,border:`1.5px solid ${C.caramel}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}><BrainCircuit size={16} color={C.caramelDeep}/></div>
@@ -3577,7 +3653,7 @@ function ChatIA({ transactions, fixedExpenses, goals, people=[] }) {
         <div ref={endRef}/>
       </div>
       <div style={{display:"flex",gap:8,paddingTop:10}}>
-        <Input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&send()} placeholder="Pergunte ao agente financeiro…" style={{flex:1}}/>
+        <Input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&send()} placeholder='Pergunte ou lance: "gastei 30 no ifood"' style={{flex:1}}/>
         <button onClick={send} disabled={loading||!input.trim()} style={{width:48,borderRadius:14,border:"none",background:C.ink,color:C.gold,cursor:"pointer",opacity:loading||!input.trim()?0.45:1,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
           <Send size={17}/>
         </button>
