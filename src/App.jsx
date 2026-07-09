@@ -10,7 +10,7 @@ import {
   Target, Calendar, Search, Camera, ChevronDown, ReceiptText,
   RotateCcw, ImagePlus, UserRound, Eye, Download, FileSpreadsheet,
   FileText, Upload, BrainCircuit, ShieldCheck, BadgeDollarSign,
-  TrendingDown, TrendingUp, Database, Printer, LockKeyhole, LogOut, UserPlus, Users,
+  TrendingDown, TrendingUp, Database, Printer, LockKeyhole, LogOut, UserPlus, Users, Bell,
   Cloud, Copy, KeyRound
 } from "lucide-react";
 
@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "2.2";
+const APP_VERSION = "2.3";
 // v-multi-tenant: nomes NAO sao mais fixos (cada workspace tem os seus, vindos de finance_members).
 // Cor por pessoa: hash estavel do nome -> mesma cor sempre, sem precisar saber a lista toda.
 const PESSOA_CASAL = "Casal";
@@ -361,8 +361,9 @@ const txToRow    = (t, ws) => ({ id:t.id, workspace_id:ws, tipo:t.tipo, valor:Nu
 const rowToTx    = (r) => ({ id:r.id, tipo:r.tipo, valor:Number(r.valor)||0, categoria:r.categoria||"", descricao:r.descricao||"", pagamento:r.pagamento||"", pessoa:r.pessoa||"", data:r.data||"", necessario:r.necessario!==false, foto:!!r.foto });
 const goalToRow  = (g, ws) => ({ id:g.id, workspace_id:ws, nome:g.nome||"", emoji:g.emoji||"🎯", alvo:Number(g.alvo)||0, saved:Number(g.saved)||0, prazo:g.prazo||null, deposits:g.deposits||[] });
 const rowToGoal  = (r) => ({ id:r.id, nome:r.nome||"", emoji:r.emoji||"🎯", alvo:Number(r.alvo)||0, saved:Number(r.saved)||0, prazo:r.prazo||"", deposits:Array.isArray(r.deposits)?r.deposits:[] });
-const fixedToRow = (f, ws) => ({ id:f.id, workspace_id:ws, nome:f.nome||"", valor:Number(f.valor)||0, dia:Number(f.dia)||1, categoria:f.categoria||"" });
-const rowToFixed = (r) => ({ id:r.id, nome:r.nome||"", valor:Number(r.valor)||0, dia:Number(r.dia)||1, categoria:r.categoria||"" });
+const fixedToRow = (f, ws) => ({ id:f.id, workspace_id:ws, nome:f.nome||"", valor:Number(f.valor)||0, dia:Number(f.dia)||1, categoria:f.categoria||"", paid_months:Array.isArray(f.paidMonths)?f.paidMonths:[] });
+const rowToFixed = (r) => ({ id:r.id, nome:r.nome||"", valor:Number(r.valor)||0, dia:Number(r.dia)||1, categoria:r.categoria||"", paidMonths:Array.isArray(r.paid_months)?r.paid_months:[] });
+const curMonthKey = () => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; };
 
 // Junta categorias base + as criadas pelo admin (custom vêm antes de "Outros").
 function catsForTipo(tipo, custom=[]) {
@@ -801,6 +802,7 @@ export default function App() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [photoView, setPhotoView] = useState(null);
+  const [billsAlertDismissed, setBillsAlertDismissed] = useState(false);
   const [toast, setToast] = useState(null);
   const [onlineUser, setOnlineUser] = useState(null);
   const [onlineWorkspace, setOnlineWorkspace] = useState(null);
@@ -1288,11 +1290,29 @@ export default function App() {
     if (online) await supabase.from("finance_goals").delete().eq("id", id);
   },[patchData,online,wsId]);
   const addFixed = useCallback(async (f)=>{
-    const fixed = {...f, id:uid(), valor:Number(f.valor)||0, dia:Number(f.dia)||1};
+    const fixed = {...f, id:uid(), valor:Number(f.valor)||0, dia:Number(f.dia)||1, paidMonths:[]};
     patchData(d=>({...d, fixedExpenses:[...d.fixedExpenses, fixed]}));
     showToast("Conta fixa salva ✓");
     if (online) await supabase.from("finance_fixed").insert(fixedToRow(fixed, wsId));
   },[patchData,online,wsId,showToast]);
+  const updateFixed = useCallback(async (f)=>{
+    const fixed = {...f, valor:Number(f.valor)||0, dia:Number(f.dia)||1};
+    patchData(d=>({...d, fixedExpenses:d.fixedExpenses.map(x=>x.id===fixed.id?fixed:x)}));
+    if (online) await supabase.from("finance_fixed").update(fixedToRow(fixed, wsId)).eq("id", fixed.id);
+  },[patchData,online,wsId]);
+  // Marca/desmarca a conta como paga no mês atual (pra parar/voltar o alerta).
+  const toggleFixedPaid = useCallback(async (id, paid)=>{
+    const mk = curMonthKey();
+    let updated = null;
+    patchData(d=>({...d, fixedExpenses:d.fixedExpenses.map(f=>{
+      if (f.id!==id) return f;
+      const set = new Set(f.paidMonths||[]);
+      if (paid) set.add(mk); else set.delete(mk);
+      updated = {...f, paidMonths:[...set]};
+      return updated;
+    })}));
+    if (online && updated) await supabase.from("finance_fixed").update({paid_months:updated.paidMonths}).eq("id", id);
+  },[patchData,online,wsId]);
   const deleteFixed = useCallback(async (id)=>{
     patchData(d=>({...d, fixedExpenses:d.fixedExpenses.filter(f=>f.id!==id)}));
     if (online) await supabase.from("finance_fixed").delete().eq("id", id);
@@ -1399,6 +1419,15 @@ export default function App() {
 
   const newManualTx = ()=>setEditing({tipo:"gasto",valor:"",categoria:"Mercado",descricao:"",pagamento:"Pix",pessoa:person==="Todos"?people[0]:person,data:todayISO(),necessario:true});
 
+  // Contas fixas vencidas/vencendo (não pagas no mês) → alerta ao abrir o app.
+  const billsDue = (()=>{
+    const mk = curMonthKey();
+    const hoje = new Date().getDate();
+    return data.fixedExpenses
+      .filter(f=>!(f.paidMonths||[]).includes(mk) && Number(f.dia) <= hoje + 3)
+      .sort((a,b)=>Number(a.dia)-Number(b.dia));
+  })();
+
   return (
     <div style={{minHeight:"100vh",background:C.bg,color:C.ink,fontFamily:F.body,paddingBottom:104}}>
       <GlobalStyles/>
@@ -1445,7 +1474,7 @@ export default function App() {
           <button onClick={()=>setMonth(m=>m.m===11?{y:m.y+1,m:0}:{y:m.y,m:m.m+1})} style={{background:"none",border:"none",padding:8,cursor:"pointer",display:"flex"}}><ChevronRight size={18} color={C.muted}/></button>
         </div>
 
-        {tab==="home"    && <Dashboard tx={txMonth} allTx={data.transactions} month={month} fixed={data.fixedExpenses} avatars={data.avatars} people={people} customCategories={data.customCategories} onNewAI={()=>setAiOpen(true)} onNewNota={()=>setNotaOpen(true)} onNewManual={newManualTx} onOpenReports={()=>setReportOpen(true)} onAddFixed={addFixed} onDeleteFixed={deleteFixed}/>}
+        {tab==="home"    && <Dashboard tx={txMonth} allTx={data.transactions} month={month} fixed={data.fixedExpenses} avatars={data.avatars} people={people} customCategories={data.customCategories} onNewAI={()=>setAiOpen(true)} onNewNota={()=>setNotaOpen(true)} onNewManual={newManualTx} onOpenReports={()=>setReportOpen(true)} onAddFixed={addFixed} onUpdateFixed={updateFixed} onDeleteFixed={deleteFixed} onTogglePaid={toggleFixedPaid}/>}
         {tab==="extrato" && <Extrato tx={txMonth} avatars={data.avatars} customCategories={data.customCategories} onDelete={deleteTx} onEdit={setEditing} onViewPhoto={setPhotoView}/>}
         {tab==="metas"   && <Metas goals={data.goals} onAdd={addGoal} onUpdate={updateGoal} onDelete={deleteGoal}/>}
         {tab==="chat"    && <ChatIA transactions={data.transactions} fixedExpenses={data.fixedExpenses} goals={data.goals} avatars={data.avatars} people={people}/>}
@@ -1491,6 +1520,7 @@ export default function App() {
       {profileOpen&& <ProfileSheet avatars={data.avatars} people={people} onSetAvatar={setAvatar} onClose={()=>setProfileOpen(false)}/>}
       {reportOpen && <ReportSheet data={data} month={month} person={person} onClose={()=>setReportOpen(false)} onImport={importData}/>}
       {photoView  && <PhotoViewer txId={photoView} onClose={()=>setPhotoView(null)}/>}
+      {!billsAlertDismissed && billsDue.length>0 && <BillsAlert bills={billsDue} customCategories={data.customCategories} onPaid={toggleFixedPaid} onClose={()=>setBillsAlertDismissed(true)}/>}
 
       {toast && (
         <div style={{position:"fixed",bottom:104,left:"50%",transform:"translateX(-50%)",background:C.ink,color:C.goldPale,padding:"11px 22px",borderRadius:999,fontSize:13,fontWeight:700,zIndex:99,whiteSpace:"nowrap",boxShadow:"0 6px 24px rgba(0,0,0,0.25)",animation:"toastIn .3s ease",fontFamily:F.body}}>
@@ -2222,7 +2252,7 @@ function AdminPanel({ auth, currentUser, data, onCreateUser, onDeleteUser, onLog
 /* ═══════════════════════════════════════════════
    DASHBOARD
 ═══════════════════════════════════════════════ */
-function Dashboard({ tx, allTx, month, fixed, avatars, people=[], customCategories=[], onNewAI, onNewNota, onNewManual, onOpenReports, onAddFixed, onDeleteFixed }) {
+function Dashboard({ tx, allTx, month, fixed, avatars, people=[], customCategories=[], onNewAI, onNewNota, onNewManual, onOpenReports, onAddFixed, onUpdateFixed, onDeleteFixed, onTogglePaid }) {
   const [calOpen, setCalOpen] = useState(false);
   const [fixOpen, setFixOpen] = useState(false);
 
@@ -2422,7 +2452,7 @@ function Dashboard({ tx, allTx, month, fixed, avatars, people=[], customCategori
           </div>
           <ChevronDown size={16} color={C.muted} style={{transform:fixOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/>
         </div>
-        {fixOpen&&<FixedSection fixed={fixed} onAdd={onAddFixed} onDelete={onDeleteFixed} customCategories={customCategories}/>}
+        {fixOpen&&<FixedSection fixed={fixed} onAdd={onAddFixed} onUpdate={onUpdateFixed} onDelete={onDeleteFixed} onTogglePaid={onTogglePaid} customCategories={customCategories}/>}
       </Card>
     </div>
   );
@@ -2484,43 +2514,72 @@ function FinCalendar({ tx, month, avatars, customCategories=[] }) {
 }
 
 /* ── GASTOS FIXOS ── */
-function FixedSection({ fixed, onAdd, onDelete, customCategories=[] }) {
-  const [form, setForm] = useState({nome:"",valor:"",dia:1,categoria:"Energia"});
-  const [adding, setAdding] = useState(false);
+function FixedSection({ fixed, onAdd, onUpdate, onDelete, onTogglePaid, customCategories=[] }) {
+  const empty = {nome:"",valor:"",dia:1,categoria:"Energia"};
+  const [form, setForm] = useState(empty);
+  const [editId, setEditId] = useState(null); // id em edição, ou "new", ou null
   const total = fixed.reduce((s,f)=>s+Number(f.valor),0);
+  const mk = curMonthKey();
+  const hoje = new Date().getDate();
+  const ordenadas = [...fixed].sort((a,b)=>Number(a.dia)-Number(b.dia));
+
+  const abrirNovo = () => { setForm(empty); setEditId("new"); };
+  const abrirEdicao = (f) => { setForm({nome:f.nome,valor:String(f.valor),dia:f.dia,categoria:f.categoria}); setEditId(f.id); };
+  const salvar = () => {
+    if (!form.nome || !form.valor) return;
+    if (editId==="new") onAdd(form);
+    else onUpdate({...form, id:editId, paidMonths:(fixed.find(x=>x.id===editId)?.paidMonths)||[]});
+    setForm(empty); setEditId(null);
+  };
+
   return (
     <div style={{marginTop:12}} onClick={e=>e.stopPropagation()}>
-      {fixed.map(f=>(
-        <div key={f.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:`1px solid ${C.hairline}`}}>
-          <div style={{fontSize:18}}>{EMOJI[f.categoria]||emojiFor(f.categoria,customCategories)}</div>
-          <div style={{flex:1}}>
-            <div style={{fontSize:13.5,fontWeight:700}}>{f.nome}</div>
-            <div style={{fontSize:11,color:C.muted}}>Vence dia {f.dia}</div>
+      {ordenadas.map(f=>{
+        const pago = (f.paidMonths||[]).includes(mk);
+        const atrasada = !pago && Number(f.dia) < hoje;
+        const venceHoje = !pago && Number(f.dia) === hoje;
+        const statusTxt = pago ? "Pago este mês ✓" : atrasada ? `Venceu dia ${f.dia}` : venceHoje ? "Vence hoje!" : `Vence dia ${f.dia}`;
+        const statusCor = pago ? C.green : atrasada ? C.red : venceHoje ? C.amber : C.muted;
+        return (
+          <div key={f.id} style={{display:"flex",alignItems:"center",gap:9,padding:"9px 0",borderBottom:`1px solid ${C.hairline}`,opacity:pago?0.62:1}}>
+            <button onClick={()=>onTogglePaid&&onTogglePaid(f.id, !pago)} title={pago?"Marcar como não pago":"Marcar como pago"} style={{background:pago?C.green:"transparent",border:`1.5px solid ${pago?C.green:C.border}`,borderRadius:8,width:24,height:24,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,padding:0}}>
+              {pago&&<Check size={14} color="#fff"/>}
+            </button>
+            <div style={{fontSize:17}}>{EMOJI[f.categoria]||emojiFor(f.categoria,customCategories)}</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13.5,fontWeight:700,textDecoration:pago?"line-through":"none"}}>{f.nome}</div>
+              <div style={{fontSize:10.5,color:statusCor,fontWeight:700}}>{statusTxt}</div>
+            </div>
+            <div style={{fontFamily:F.display,fontSize:14.5,fontWeight:600,color:C.plum}}>{fmt(f.valor)}</div>
+            <button onClick={()=>abrirEdicao(f)} style={{background:"none",border:"none",cursor:"pointer",padding:4,color:C.faint,display:"flex"}}><Pencil size={13}/></button>
+            <button onClick={()=>{if(window.confirm("Excluir esta conta fixa?"))onDelete(f.id)}} style={{background:"none",border:"none",cursor:"pointer",padding:4,color:C.faint,display:"flex"}}><Trash2 size={13}/></button>
           </div>
-          <div style={{fontFamily:F.display,fontSize:14.5,fontWeight:600,color:C.plum}}>{fmt(f.valor)}</div>
-          <button onClick={()=>onDelete(f.id)} style={{background:C.redPale,border:"none",borderRadius:9,padding:6,cursor:"pointer",display:"flex"}}><Trash2 size={13} color={C.red}/></button>
-        </div>
-      ))}
+        );
+      })}
       {fixed.length>0&&<div style={{fontSize:12,fontWeight:700,color:C.plum,marginTop:10,textAlign:"right"}}>Total fixo: <span style={{fontFamily:F.display,fontSize:14}}>{fmt(total)}</span>/mês</div>}
-      {adding?(
-        <div style={{marginTop:12,display:"flex",flexDirection:"column",gap:8}}>
+      {editId?(
+        <div style={{marginTop:12,display:"flex",flexDirection:"column",gap:8,background:"#FBF7EE",border:`1px solid ${C.border}`,borderRadius:12,padding:10}}>
+          <div style={{fontSize:11.5,fontWeight:700,color:C.muted}}>{editId==="new"?"Nova conta fixa":"Editar conta fixa"}</div>
           <div style={{display:"flex",gap:8}}>
             <Input placeholder="Nome (ex: Internet)" value={form.nome} onChange={e=>setForm({...form,nome:e.target.value})} style={{flex:2}}/>
-            <Input type="number" placeholder="Valor" value={form.valor} onChange={e=>setForm({...form,valor:e.target.value})} style={{flex:1}}/>
+            <Input type="number" inputMode="decimal" placeholder="Valor" value={form.valor} onChange={e=>setForm({...form,valor:e.target.value})} style={{flex:1}}/>
+          </div>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            <div style={{flex:1,display:"flex",alignItems:"center",gap:6}}>
+              <span style={{fontSize:11.5,color:C.muted,fontWeight:700,whiteSpace:"nowrap"}}>Vence dia</span>
+              <Input type="number" min={1} max={31} value={form.dia} onChange={e=>setForm({...form,dia:e.target.value})} style={{width:60,textAlign:"center"}}/>
+            </div>
+            <Select value={form.categoria} onChange={e=>setForm({...form,categoria:e.target.value})} style={{flex:1.4}}>{catsForTipo("gasto",customCategories).map(c=><option key={c} value={c}>{c}</option>)}</Select>
           </div>
           <div style={{display:"flex",gap:8}}>
-            <Input type="number" min={1} max={31} placeholder="Dia" value={form.dia} onChange={e=>setForm({...form,dia:Number(e.target.value)})} style={{flex:1}}/>
-            <Select value={form.categoria} onChange={e=>setForm({...form,categoria:e.target.value})} style={{flex:2}}>{catsForTipo("gasto",customCategories).map(c=><option key={c}>{c}</option>)}</Select>
-          </div>
-          <div style={{display:"flex",gap:8}}>
-            <Btn variant="outline" small onClick={()=>setAdding(false)} style={{flex:1}}>Cancelar</Btn>
-            <Btn variant="gold" small onClick={()=>{if(form.nome&&form.valor){onAdd(form);setForm({nome:"",valor:"",dia:1,categoria:"Energia"});setAdding(false);}}} style={{flex:2}}><Check size={14}/> Salvar</Btn>
+            <Btn variant="outline" small onClick={()=>{setEditId(null);setForm(empty);}} style={{flex:1}}>Cancelar</Btn>
+            <Btn variant="gold" small onClick={salvar} disabled={!form.nome||!(Number(form.valor)>0)} style={{flex:2}}><Check size={14}/> Salvar</Btn>
           </div>
         </div>
       ):(
-        <Btn variant="ghost" small onClick={()=>setAdding(true)} style={{width:"100%",marginTop:10}}><Plus size={14} color={C.caramelDeep}/> Adicionar conta fixa</Btn>
+        <Btn variant="ghost" small onClick={abrirNovo} style={{width:"100%",marginTop:10}}><Plus size={14} color={C.caramelDeep}/> Adicionar conta fixa</Btn>
       )}
-      {fixed.length===0&&!adding&&<div style={{fontSize:12.5,color:C.muted,textAlign:"center",padding:"6px 0"}}>Nenhuma conta fixa cadastrada.</div>}
+      {fixed.length===0&&!editId&&<div style={{fontSize:12.5,color:C.muted,textAlign:"center",padding:"6px 0"}}>Nenhuma conta fixa cadastrada.</div>}
     </div>
   );
 }
@@ -2564,6 +2623,42 @@ function Extrato({ tx, avatars, customCategories=[], onDelete, onEdit, onViewPho
           </Card>
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ── ALERTA DE CONTAS A PAGAR (abre ao entrar no app) ── */
+function BillsAlert({ bills, customCategories=[], onPaid, onClose }) {
+  const hoje = new Date().getDate();
+  const total = bills.reduce((s,f)=>s+Number(f.valor),0);
+  return (
+    <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(42,32,24,0.42)",backdropFilter:"blur(5px)",zIndex:70,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div className="su" onClick={e=>e.stopPropagation()} style={{width:"100%",maxWidth:420,background:C.surface,borderRadius:24,border:`1px solid ${C.border}`,padding:20,maxHeight:"85vh",overflowY:"auto",boxShadow:C.shadow}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+          <div style={{width:42,height:42,borderRadius:12,background:C.amberPale,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><Bell size={20} color={C.amber}/></div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontFamily:F.display,fontSize:19,fontWeight:600}}>Contas a pagar</div>
+            <div style={{fontSize:12,color:C.muted}}>{bills.length} conta{bills.length>1?"s":""} · total {fmt(total)}</div>
+          </div>
+          <button onClick={onClose} style={{background:C.bgAlt,border:"none",borderRadius:99,width:30,height:30,cursor:"pointer",color:C.muted,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><X size={15}/></button>
+        </div>
+        {bills.map(f=>{
+          const atrasada = Number(f.dia)<hoje, venceHoje = Number(f.dia)===hoje;
+          return (
+            <div key={f.id} style={{display:"flex",alignItems:"center",gap:10,padding:"11px 0",borderTop:`1px solid ${C.hairline}`}}>
+              <div style={{fontSize:20,flexShrink:0}}>{EMOJI[f.categoria]||emojiFor(f.categoria,customCategories)}</div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontWeight:700,fontSize:14,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{f.nome}</div>
+                <div style={{fontSize:11,fontWeight:700,color:atrasada?C.red:venceHoje?C.amber:C.muted}}>
+                  {atrasada?`Venceu dia ${f.dia}`:venceHoje?"Vence hoje!":`Vence dia ${f.dia}`} · {fmt(f.valor)}
+                </div>
+              </div>
+              <Btn variant="gold" small onClick={()=>onPaid(f.id, true)}><Check size={13}/> Já paguei</Btn>
+            </div>
+          );
+        })}
+        <Btn variant="outline" onClick={onClose} style={{width:"100%",marginTop:14}}>Ver depois</Btn>
+      </div>
     </div>
   );
 }
