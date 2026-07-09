@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "3.2";
+const APP_VERSION = "3.3";
 // Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
 const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
 // URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
@@ -1733,15 +1733,27 @@ function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, syncSta
   const [message, setMessage] = useState("");
   const [pendingEmail, setPendingEmail] = useState("");
   const [code, setCode] = useState("");
+  // CAPTCHA simples (anti-spam de contas): soma de 2 números; regenera a cada tentativa errada.
+  const novoCaptcha = () => ({ a: 1+Math.floor(Math.random()*8), b: 1+Math.floor(Math.random()*8) });
+  const [captcha, setCaptcha] = useState(novoCaptcha);
+  const [captchaResp, setCaptchaResp] = useState("");
   const s = (k,v) => { setForm(f=>({...f,[k]:v})); setError(""); setMessage(""); };
 
   const submit = async (e) => {
     e.preventDefault();
+    if (mode === "create") {
+      if (Number(captchaResp) !== captcha.a + captcha.b) {
+        setError("Confirme a conta: resolva a soma de segurança corretamente.");
+        setCaptcha(novoCaptcha()); setCaptchaResp("");
+        return;
+      }
+    }
     setBusy(true);
     setError("");
     setMessage("");
     const result = mode === "create" ? await onCreate(form) : await onLogin(form);
     setBusy(false);
+    if (mode === "create" && !result.ok) { setCaptcha(novoCaptcha()); setCaptchaResp(""); }
     if (!result.ok) {
       setError(result.message);
       return;
@@ -1852,7 +1864,14 @@ function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, syncSta
           {mode==="create"&&(
             <>
               <Eyebrow style={{marginBottom:5}}>Confirmar senha</Eyebrow>
-              <Input type="password" value={form.confirm} onChange={e=>s("confirm",e.target.value)} placeholder="Repita a senha" autoComplete="new-password" style={{marginBottom:14}}/>
+              <Input type="password" value={form.confirm} onChange={e=>s("confirm",e.target.value)} placeholder="Repita a senha" autoComplete="new-password" style={{marginBottom:12}}/>
+              <div style={{background:C.bluePale,border:`1px solid rgba(37,99,168,0.16)`,borderRadius:12,padding:"10px 12px",marginBottom:14}}>
+                <Eyebrow style={{marginBottom:6,color:C.blue}}>Confirmação de segurança 🔒</Eyebrow>
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <span style={{fontFamily:F.display,fontSize:17,fontWeight:600,color:C.ink,whiteSpace:"nowrap"}}>{captcha.a} + {captcha.b} =</span>
+                  <Input type="number" inputMode="numeric" value={captchaResp} onChange={e=>{setCaptchaResp(e.target.value);setError("");}} placeholder="?" style={{flex:1,textAlign:"center",fontWeight:700}}/>
+                </div>
+              </div>
             </>
           )}
           {error&&(
@@ -3219,16 +3238,28 @@ function AISheet({ onClose, onConfirm, defaultPerson, people=[], avatars, custom
   const sugRef = useRef(null); // guarda o palpite original da IA (categoria + termo) pra detectar correção
 
   const speechOK = typeof window!=="undefined"&&(window.SpeechRecognition||window.webkitSpeechRecognition);
+  const micTimer = useRef(null);
+  const pararMic = () => {
+    try { recRef.current?.stop(); } catch {}
+    try { recRef.current?.abort?.(); } catch {}
+    if (micTimer.current) { clearTimeout(micTimer.current); micTimer.current = null; }
+    setListening(false);
+  };
   const toggleMic = () => {
-    if(listening){ recRef.current?.stop(); setListening(false); return; }
+    if(listening){ pararMic(); return; }
     if(!speechOK){ setError("Microfone indisponível neste navegador — digite a frase."); return; }
     const SR = window.SpeechRecognition||window.webkitSpeechRecognition;
-    const r = new SR(); r.lang="pt-BR"; r.interimResults=true;
+    const r = new SR(); r.lang="pt-BR"; r.interimResults=true; r.continuous=false;
     r.onresult=e=>setText(Array.from(e.results).map(x=>x[0].transcript).join(""));
-    r.onend=()=>setListening(false);
-    r.onerror=()=>{setListening(false);setError("Não consegui ouvir. Tente de novo.");};
-    recRef.current=r; setError(""); setListening(true); r.start();
+    r.onend=()=>{ setListening(false); if (micTimer.current){clearTimeout(micTimer.current);micTimer.current=null;} };
+    r.onerror=()=>{ setListening(false); setError("Não consegui ouvir. Tente de novo."); };
+    recRef.current=r; setError(""); setListening(true);
+    try { r.start(); } catch { setListening(false); return; }
+    // Segurança: desliga sozinho depois de 15s (evita ficar aberto pra sempre).
+    micTimer.current = setTimeout(()=>pararMic(), 15000);
   };
+  // Ao fechar a tela, garante que o microfone para (não fica aberto).
+  useEffect(()=>()=>{ try{recRef.current?.stop();}catch{}; try{recRef.current?.abort?.();}catch{}; if(micTimer.current)clearTimeout(micTimer.current); },[]);
 
   const interpret = async () => {
     if(!text.trim())return;
