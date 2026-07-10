@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "3.5";
+const APP_VERSION = "3.6";
 // Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
 const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
 // URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
@@ -1480,22 +1480,54 @@ export default function App() {
     patchData(d=>({...d, fixedExpenses:d.fixedExpenses.map(x=>x.id===fixed.id?fixed:x)}));
     if (online) await supabase.from("finance_fixed").update(fixedToRow(fixed, wsId)).eq("id", fixed.id);
   },[patchData,online,wsId]);
-  // Marca/desmarca a conta como paga no mês atual (pra parar/voltar o alerta).
+  // Marca/desmarca a conta como paga no mês atual. Paga = vira GASTO de verdade no relatório
+  // (lançamento com id determinístico "fx_<conta>_<mês>", pra não duplicar e poder desfazer).
   const toggleFixedPaid = useCallback(async (id, paid)=>{
     const mk = curMonthKey();
-    let updated = null;
+    let fixedRef = null, updated = null;
     patchData(d=>({...d, fixedExpenses:d.fixedExpenses.map(f=>{
       if (f.id!==id) return f;
+      fixedRef = f;
       const set = new Set(f.paidMonths||[]);
       if (paid) set.add(mk); else set.delete(mk);
       updated = {...f, paidMonths:[...set]};
       return updated;
     })}));
     if (online && updated) await supabase.from("finance_fixed").update({paid_months:updated.paidMonths}).eq("id", id);
-  },[patchData,online,wsId]);
+    if (!fixedRef) return;
+
+    // Lançamento espelho da conta fixa paga (entra em Gastos, Saldo, categoria, quem gastou).
+    const txId = `fx_${id}_${mk}`;
+    if (paid) {
+      const [yy,mm] = mk.split("-").map(Number);
+      const lastDay = new Date(yy, mm, 0).getDate();               // dia seguro (não estoura o mês)
+      const dd = Math.min(Math.max(Number(fixedRef.dia)||1, 1), lastDay);
+      const membros = onlineMembers.map(m=>(m.display_name||"").trim()).filter(Boolean);
+      const pessoaFixa = membros.length>1 ? PESSOA_CASAL : (membros[0] || onlineUser?.user_metadata?.display_name || onlineUser?.email?.split("@")[0] || "Você");
+      const linkedTx = {
+        id: txId, tipo:"gasto", valor:Number(fixedRef.valor)||0,
+        categoria: fixedRef.categoria || "Outros",
+        descricao: `${fixedRef.nome||"Conta fixa"} (conta fixa)`,
+        pagamento: fixedRef.variavel ? "Crédito" : "Boleto",
+        pessoa: pessoaFixa, data:`${mk}-${String(dd).padStart(2,"0")}`, necessario:true,
+      };
+      patchData(d=>({...d, transactions:[linkedTx, ...d.transactions.filter(t=>t.id!==txId)]}));
+      if (online) await supabase.from("finance_tx").upsert(txToRow(linkedTx, wsId));
+    } else {
+      patchData(d=>({...d, transactions:d.transactions.filter(t=>t.id!==txId)}));
+      if (online) await supabase.from("finance_tx").delete().eq("id", txId);
+    }
+  },[patchData,online,wsId,onlineMembers,onlineUser]);
   const deleteFixed = useCallback(async (id)=>{
-    patchData(d=>({...d, fixedExpenses:d.fixedExpenses.filter(f=>f.id!==id)}));
-    if (online) await supabase.from("finance_fixed").delete().eq("id", id);
+    // Remove a conta fixa E os lançamentos-espelho que ela gerou (fx_<id>_<mês>).
+    patchData(d=>({...d,
+      fixedExpenses:d.fixedExpenses.filter(f=>f.id!==id),
+      transactions:d.transactions.filter(t=>!String(t.id).startsWith(`fx_${id}_`)),
+    }));
+    if (online) {
+      await supabase.from("finance_fixed").delete().eq("id", id);
+      await supabase.from("finance_tx").delete().like("id", `fx_${id}_%`);
+    }
   },[patchData,online,wsId]);
 
   const importData = useCallback(async (next)=>{
