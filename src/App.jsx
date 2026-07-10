@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "3.6";
+const APP_VERSION = "3.7";
 // Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
 const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
 // URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
@@ -1164,6 +1164,29 @@ export default function App() {
     };
   },[onlineWorkspace?.id, loadOnlineMembers, loadOnlineData]);
 
+  // TEMPO REAL: reflete ao vivo o que a outra pessoa do mesmo espaço mexer. Ao receber qualquer
+  // mudança nas tabelas, recarrega os dados (debounce colapsa rajadas). Respeita lastWriteRef pra
+  // não sobrescrever o que EU acabei de gravar antes do servidor confirmar. O refresh-ao-focar
+  // acima continua como reserva (se o tempo real não estiver disponível, nada quebra).
+  useEffect(()=>{
+    if (!SUPABASE_ENABLED || !supabase || !onlineWorkspace?.id) return undefined;
+    const ws = onlineWorkspace.id;
+    let alive = true, timer = null;
+    const scheduleReload = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(async ()=>{
+        if (!alive) return;
+        if (Date.now() - lastWriteRef.current < 2500) { scheduleReload(); return; } // acabei de gravar → espera assentar
+        try { const fresh = await loadOnlineData(ws); if (alive) setData(()=>{ persistAll(fresh); return fresh; }); } catch {}
+      }, 600);
+    };
+    const tables = ["finance_tx","finance_goals","finance_fixed","finance_categories","finance_avatars","finance_sinonimos"];
+    const channel = supabase.channel(`ws-rt-${ws}`);
+    tables.forEach(table => channel.on("postgres_changes", { event:"*", schema:"public", table, filter:`workspace_id=eq.${ws}` }, scheduleReload));
+    channel.subscribe();
+    return () => { alive = false; if (timer) clearTimeout(timer); supabase.removeChannel(channel); };
+  },[onlineWorkspace?.id, loadOnlineData]);
+
   const currentUser = useMemo(
     ()=>auth.users.find(u=>u.id===session?.userId) || null,
     [auth.users, session]
@@ -1496,7 +1519,13 @@ export default function App() {
     if (online && updated) await supabase.from("finance_fixed").update({paid_months:updated.paidMonths}).eq("id", id);
     if (!fixedRef) return;
 
-    // Lançamento espelho da conta fixa paga (entra em Gastos, Saldo, categoria, quem gastou).
+    // Fatura de CARTÃO = só lembrete de vencimento; NÃO vira gasto (as compras do cartão já são
+    // lançadas no dia a dia — se a fatura contasse também, seria em dobro).
+    const cat = normalize(fixedRef.categoria||"");
+    const ehCartao = cat.includes("cartao de credito") || cat.includes("fatura") || !!fixedRef.variavel;
+    if (ehCartao) return;
+
+    // Conta fixa "normal" (Internet, luz, aluguel, parcelamento) paga vira GASTO de verdade.
     const txId = `fx_${id}_${mk}`;
     if (paid) {
       const [yy,mm] = mk.split("-").map(Number);
