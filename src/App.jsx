@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "3.8";
+const APP_VERSION = "3.9";
 // Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
 const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
 // URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
@@ -892,6 +892,9 @@ function GlobalStyles() {
     <style>{`
       @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
       *{-webkit-tap-highlight-color:transparent;box-sizing:border-box}
+      html{-webkit-text-size-adjust:100%}
+      /* Estabiliza a tela no celular: sem rolagem lateral, sem "arrasto" que faz a barra do Chrome piscar. */
+      html,body{overflow-x:hidden;overscroll-behavior-y:none;margin:0}
       ::-webkit-scrollbar{width:0}
       input::placeholder,textarea::placeholder{color:${C.faint}}
       select option{background:${C.surface};color:${C.ink}}
@@ -924,7 +927,7 @@ function BrandMark({ size=48 }) {
 
 function LoadingScreen({ label="Prosperidade", status }) {
   return (
-    <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:12,padding:20,textAlign:"center"}}>
+    <div style={{minHeight:"100dvh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:12,padding:20,textAlign:"center"}}>
       <GlobalStyles/>
       <BrandMark size={52}/>
       <div style={{fontFamily:F.display,fontSize:22,fontWeight:600,color:C.caramelDeep}}>{label}</div>
@@ -1706,7 +1709,7 @@ export default function App() {
   }) || null;
 
   return (
-    <div style={{minHeight:"100vh",background:C.bg,color:C.ink,fontFamily:F.body,paddingBottom:104}}>
+    <div style={{minHeight:"100dvh",background:C.bg,color:C.ink,fontFamily:F.body,paddingBottom:104}}>
       <GlobalStyles/>
 
       <div style={{maxWidth:480,margin:"0 auto",padding:"22px 18px"}}>
@@ -1880,7 +1883,7 @@ function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, syncSta
 
   if (mode === "confirm") {
     return (
-      <div style={{minHeight:"100vh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+      <div style={{minHeight:"100dvh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
         <GlobalStyles/>
         <Card style={{width:"100%",maxWidth:430,padding:24}}>
           <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:18}}>
@@ -1915,7 +1918,7 @@ function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, syncSta
   }
 
   return (
-    <div style={{minHeight:"100vh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+    <div style={{minHeight:"100dvh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
       <GlobalStyles/>
       <Card style={{width:"100%",maxWidth:430,padding:24}}>
         <div style={{display:"flex",alignItems:"center",gap:11,marginBottom:20}}>
@@ -2011,7 +2014,7 @@ function OnlineWorkspaceGate({ user, onCreateWorkspace, onAcceptInvite, onLogout
   };
 
   return (
-    <div style={{minHeight:"100vh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+    <div style={{minHeight:"100dvh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
       <GlobalStyles/>
       <Card style={{width:"100%",maxWidth:430,padding:24}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,marginBottom:18}}>
@@ -2443,9 +2446,9 @@ function TermsGate({ onAccept, onDecline }) {
   };
 
   return (
-    <div style={{minHeight:"100vh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+    <div style={{minHeight:"100dvh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
       <GlobalStyles/>
-      <Card style={{width:"100%",maxWidth:520,padding:0,display:"flex",flexDirection:"column",maxHeight:"92vh"}}>
+      <Card style={{width:"100%",maxWidth:520,padding:0,display:"flex",flexDirection:"column",maxHeight:"92dvh"}}>
         <div style={{padding:"22px 24px 14px"}}>
           <Eyebrow>Antes de continuar</Eyebrow>
           <div style={{fontFamily:F.display,fontSize:22,fontWeight:600,lineHeight:1.1}}>Termo de Uso e Privacidade</div>
@@ -2515,7 +2518,7 @@ function AuthGate({ auth, onCreateFirst, onLogin }) {
   };
 
   return (
-    <div style={{minHeight:"100vh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+    <div style={{minHeight:"100dvh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
       <GlobalStyles/>
       <Card style={{width:"100%",maxWidth:430,padding:24}}>
         <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:18}}>
@@ -3003,7 +3006,7 @@ function FixedSection({ fixed, onAdd, onUpdate, onDelete, onTogglePaid, customCa
             </div>
             <div style={{fontFamily:F.display,fontSize:14.5,fontWeight:600,color:C.plum}}>{f.variavel?"~"+fmt(f.valor):fmt(f.valor)}</div>
             <button onClick={()=>abrirEdicao(f)} style={{background:"none",border:"none",cursor:"pointer",padding:4,color:C.faint,display:"flex"}}><Pencil size={13}/></button>
-            <button onClick={()=>{if(window.confirm("Excluir esta conta fixa?"))onDelete(f.id)}} style={{background:"none",border:"none",cursor:"pointer",padding:4,color:C.faint,display:"flex"}}><Trash2 size={13}/></button>
+            <ConfirmDeleteButton onConfirm={()=>onDelete(f.id)} size={13}/>
           </div>
         );
       })}
@@ -3090,7 +3093,7 @@ function BillsAlert({ bills, goalNudge, customCategories=[], onPaid, onClose }) 
   const goalPct = goalNudge && goalNudge.alvo>0 ? Math.min(Number(goalNudge.saved||0)/Number(goalNudge.alvo)*100,100) : 0;
   return (
     <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(42,32,24,0.42)",backdropFilter:"blur(5px)",zIndex:70,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
-      <div className="su" onClick={e=>e.stopPropagation()} style={{width:"100%",maxWidth:420,background:C.surface,borderRadius:24,border:`1px solid ${C.border}`,padding:20,maxHeight:"88vh",overflowY:"auto",boxShadow:C.shadow}}>
+      <div className="su" onClick={e=>e.stopPropagation()} style={{width:"100%",maxWidth:420,background:C.surface,borderRadius:24,border:`1px solid ${C.border}`,padding:20,maxHeight:"88dvh",overflowY:"auto",boxShadow:C.shadow}}>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
           <div style={{width:42,height:42,borderRadius:12,background:C.amberPale,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><Bell size={20} color={C.amber}/></div>
           <div style={{flex:1,minWidth:0}}>
@@ -3132,6 +3135,26 @@ function BillsAlert({ bills, goalNudge, customCategories=[], onPaid, onClose }) 
 }
 
 /* ── TX ROW (com avatar da pessoa e foto) ── */
+// Excluir com confirmação DENTRO do app (2 toques). Substitui window.confirm, que em PWA
+// instalado / navegador embutido (WhatsApp, Instagram) não abre e travava a exclusão no celular.
+function ConfirmDeleteButton({ onConfirm, size=14, iconColor=C.faint, label="Excluir?", iconWrapStyle }) {
+  const [armed, setArmed] = useState(false);
+  useEffect(()=>{ if(!armed) return; const id=setTimeout(()=>setArmed(false), 3500); return ()=>clearTimeout(id); },[armed]);
+  return armed ? (
+    <button title="Confirmar exclusão" aria-label="Confirmar exclusão"
+      onClick={(e)=>{ e.stopPropagation(); setArmed(false); onConfirm(); }}
+      style={{background:C.red,border:"none",borderRadius:9,padding:"4px 9px",color:"#fff",fontSize:11,fontWeight:800,cursor:"pointer",whiteSpace:"nowrap"}}>
+      {label}
+    </button>
+  ) : (
+    <button title="Excluir" aria-label="Excluir"
+      onClick={(e)=>{ e.stopPropagation(); setArmed(true); }}
+      style={{background:"none",border:"none",color:iconColor,cursor:"pointer",padding:3,display:"flex",...iconWrapStyle}}>
+      <Trash2 size={size}/>
+    </button>
+  );
+}
+
 function TxRow({ t, avatars, customCategories=[], onDelete, onEdit, onViewPhoto }) {
   return (
     <div style={{display:"flex",alignItems:"center",gap:10,padding:"12px 0",borderBottom:`1px solid ${C.hairline}`}}>
@@ -3159,7 +3182,7 @@ function TxRow({ t, avatars, customCategories=[], onDelete, onEdit, onViewPhoto 
         {t.tipo==="ganho"?"+":"−"}{fmtShort(t.valor)}
       </div>
       {onEdit&&<button title="Editar" aria-label="Editar lançamento" onClick={()=>onEdit(t)} style={{background:"none",border:"none",color:C.faint,cursor:"pointer",padding:3}}><Pencil size={14}/></button>}
-      {onDelete&&<button title="Excluir" aria-label="Excluir lançamento" onClick={()=>{if(window.confirm("Excluir este lançamento?"))onDelete(t.id)}} style={{background:"none",border:"none",color:C.faint,cursor:"pointer",padding:3}}><Trash2 size={14}/></button>}
+      {onDelete&&<ConfirmDeleteButton onConfirm={()=>onDelete(t.id)} size={14}/>}
     </div>
   );
 }
@@ -3202,7 +3225,7 @@ function Metas({ goals, onAdd, onUpdate, onDelete }) {
                   {g.prazo&&<div style={{fontSize:11.5,color:C.muted}}>até {new Date(g.prazo+"T12:00:00").toLocaleDateString("pt-BR")}</div>}
                 </div>
               </div>
-              <button onClick={(e)=>{e.stopPropagation();if(window.confirm("Excluir esta meta?"))onDelete(g.id)}} style={{background:C.redPale,border:"none",borderRadius:9,padding:6,cursor:"pointer",display:"flex"}}><Trash2 size={13} color={C.red}/></button>
+              <ConfirmDeleteButton onConfirm={()=>onDelete(g.id)} size={13} iconColor={C.red} iconWrapStyle={{background:C.redPale,borderRadius:9,padding:6}}/>
             </div>
             <div style={{margin:"14px 0 10px"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:5}}>
@@ -3695,7 +3718,7 @@ function ChatIA({ transactions, fixedExpenses, goals, people=[], customCategorie
   );
 
   return (
-    <div className="su" style={{display:"flex",flexDirection:"column",height:"calc(100vh - 300px)",minHeight:360}}>
+    <div className="su" style={{display:"flex",flexDirection:"column",height:"calc(100dvh - 300px)",minHeight:360}}>
       <div style={{flex:1,overflowY:"auto",paddingBottom:8}}>
         {msgs.map((m,i)=>{
           if (m.role==="confirm") {
@@ -3866,7 +3889,7 @@ function SearchModal({ transactions, avatars, customCategories=[], onClose, onEd
   },[q,transactions]);
   return (
     <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(42,32,24,0.35)",backdropFilter:"blur(5px)",zIndex:60,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"14px 16px"}}>
-      <div className="su" onClick={e=>e.stopPropagation()} style={{width:"100%",maxWidth:480,background:C.surface,borderRadius:24,border:`1px solid ${C.border}`,boxShadow:C.shadow,padding:16,maxHeight:"85vh",overflowY:"auto"}}>
+      <div className="su" onClick={e=>e.stopPropagation()} style={{width:"100%",maxWidth:480,background:C.surface,borderRadius:24,border:`1px solid ${C.border}`,boxShadow:C.shadow,padding:16,maxHeight:"85dvh",overflowY:"auto"}}>
         <div style={{display:"flex",gap:8,marginBottom:12}}>
           <Input autoFocus value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar: mercado, Pix, 2026-06…" style={{flex:1}}/>
           <button onClick={onClose} style={{background:C.bgAlt,border:`1px solid ${C.border}`,borderRadius:12,padding:"0 13px",cursor:"pointer",color:C.muted,display:"flex",alignItems:"center"}}><X size={16}/></button>
@@ -3989,7 +4012,7 @@ function PhotoViewer({ txId, onClose }) {
       {loading?(
         <Loader2 size={28} color={C.gold} style={{animation:"spin 1s linear infinite"}}/>
       ):foto?(
-        <img src={foto} alt="Foto do lançamento" style={{maxWidth:"100%",maxHeight:"85vh",borderRadius:20,boxShadow:"0 20px 60px rgba(0,0,0,0.5)"}} onClick={e=>e.stopPropagation()}/>
+        <img src={foto} alt="Foto do lançamento" style={{maxWidth:"100%",maxHeight:"85dvh",borderRadius:20,boxShadow:"0 20px 60px rgba(0,0,0,0.5)"}} onClick={e=>e.stopPropagation()}/>
       ):(
         <div style={{color:"#F6E9D2",fontSize:14}}>Foto não encontrada.</div>
       )}
@@ -4004,7 +4027,7 @@ function PhotoViewer({ txId, onClose }) {
 function Sheet({ title, children, onClose }) {
   return (
     <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(42,32,24,0.35)",backdropFilter:"blur(5px)",zIndex:50,display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
-      <div className="su" onClick={e=>e.stopPropagation()} style={{width:"100%",maxWidth:480,background:C.surface,borderRadius:"28px 28px 0 0",border:`1px solid ${C.border}`,borderBottom:"none",padding:"22px 20px",maxHeight:"92vh",overflowY:"auto",boxShadow:"0 -8px 40px rgba(60,40,20,0.18)"}}>
+      <div className="su" onClick={e=>e.stopPropagation()} style={{width:"100%",maxWidth:480,background:C.surface,borderRadius:"28px 28px 0 0",border:`1px solid ${C.border}`,borderBottom:"none",padding:"22px 20px",maxHeight:"92dvh",overflowY:"auto",boxShadow:"0 -8px 40px rgba(60,40,20,0.18)"}}>
         <div style={{width:40,height:4,borderRadius:99,background:C.bgAlt,margin:"-8px auto 14px"}}/>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
           <div style={{fontFamily:F.display,fontSize:19,fontWeight:600,color:C.ink}}>{title}</div>
