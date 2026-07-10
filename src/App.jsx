@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "3.11";
+const APP_VERSION = "3.12";
 // Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
 const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
 // URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
@@ -1342,12 +1342,10 @@ export default function App() {
     if (!cleanEmail || String(password||"").length < 6) {
       return { ok:false, message:"Informe email e senha com pelo menos 6 caracteres." };
     }
-    setOnlineLoading(true);
+    // NÃO mexe em onlineLoading aqui: trocar pra tela "sincronizando" desmonta o formulário
+    // e a mensagem de erro some ("volta tudo zerado"). O botão já tem spinner próprio (busy).
     const { error } = await supabase.auth.signInWithPassword({ email:cleanEmail, password });
-    if (error) {
-      setOnlineLoading(false);
-      return { ok:false, message:friendlyAuthError(error) };
-    }
+    if (error) return { ok:false, message:friendlyAuthError(error) };
     return { ok:true };
   },[]);
 
@@ -1359,7 +1357,7 @@ export default function App() {
       return { ok:false, message:"Preencha nome, email e senha com pelo menos 6 caracteres." };
     }
     if (password !== confirm) return { ok:false, message:"As senhas não conferem." };
-    setOnlineLoading(true);
+    // Sem onlineLoading aqui (mesmo motivo do login: desmontaria o formulário e o erro sumiria).
     try {
       // Timeout de segurança: se o servidor de e-mail travar, não deixamos a tela girando pra sempre.
       const signUpPromise = supabase.auth.signUp({
@@ -1372,14 +1370,12 @@ export default function App() {
       });
       const timeout = new Promise((_,rej)=>setTimeout(()=>rej(new Error("__timeout__")), 20000));
       const { data: created, error } = await Promise.race([signUpPromise, timeout]);
-      setOnlineLoading(false);
       if (error) return { ok:false, message: friendlyAuthError(error) };
       if (!created.session) {
         return { ok:true, needsConfirmation:true, email:cleanEmail, message:`Conta criada com sucesso! ✓ Enviamos um código de 6 dígitos para ${cleanEmail} — digite abaixo para ativar.` };
       }
       return { ok:true };
     } catch (e) {
-      setOnlineLoading(false);
       if (String(e?.message) === "__timeout__")
         return { ok:false, message:"O envio de e-mail demorou demais. A conta pode já ter sido criada — tente “Já tenho conta / entrar”, ou aguarde 1 minuto e tente de novo." };
       return { ok:false, message:"Falha de conexão ao criar a conta. Confira a internet e tente de novo." };
@@ -1391,10 +1387,9 @@ export default function App() {
     const cleanEmail = String(email||"").trim().toLowerCase();
     const cleanToken = String(token||"").trim();
     if (!cleanToken) return { ok:false, message:"Digite o código recebido por email." };
-    setOnlineLoading(true);
+    // Sem onlineLoading: errar o código NÃO pode desmontar a tela do código (perderia o email pendente).
     const { error } = await supabase.auth.verifyOtp({ email:cleanEmail, token:cleanToken, type:"signup" });
     if (error) {
-      setOnlineLoading(false);
       return { ok:false, message: error.message.includes("expired") ? "Código expirado. Peça um novo código." : error.message.includes("invalid") ? "Código incorreto. Confira e tente de novo." : error.message };
     }
     return { ok:true };

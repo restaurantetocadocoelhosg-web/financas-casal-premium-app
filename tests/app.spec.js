@@ -57,6 +57,17 @@ test("3. lançar manual → aparece no extrato → excluir (2 toques) → some",
   await expect(page.getByText(marca)).toHaveCount(0);
 });
 
+test("6. senha errada mostra o erro na tela (sem zerar o formulário)", async ({ page }) => {
+  await page.goto("/");
+  await page.getByPlaceholder("voce@email.com").fill(EMAIL);
+  await page.getByPlaceholder("Mínimo 6 caracteres").fill("senha-errada-123");
+  await page.locator("form").getByRole("button", { name: "Entrar" }).click();
+  // O erro tem que ficar visível na própria tela de login…
+  await expect(page.getByText("Email ou senha incorretos", { exact: false })).toBeVisible({ timeout: 20_000 });
+  // …e o email digitado não pode ter sumido (antes a tela "sincronizava" e voltava zerada).
+  await expect(page.getByPlaceholder("voce@email.com")).toHaveValue(EMAIL);
+});
+
 test("5. valor com vírgula (12,34) salva o número certo", async ({ page }) => {
   const marca = `Robo Virgula ${Date.now()}`;
   await login(page);
