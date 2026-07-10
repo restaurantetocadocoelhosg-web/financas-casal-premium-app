@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "3.7";
+const APP_VERSION = "3.8";
 // Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
 const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
 // URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
@@ -1182,7 +1182,14 @@ export default function App() {
     };
     const tables = ["finance_tx","finance_goals","finance_fixed","finance_categories","finance_avatars","finance_sinonimos"];
     const channel = supabase.channel(`ws-rt-${ws}`);
-    tables.forEach(table => channel.on("postgres_changes", { event:"*", schema:"public", table, filter:`workspace_id=eq.${ws}` }, scheduleReload));
+    tables.forEach(table => {
+      // INSERT/UPDATE trazem a linha inteira → filtra pelo workspace (eficiente).
+      channel.on("postgres_changes", { event:"INSERT", schema:"public", table, filter:`workspace_id=eq.${ws}` }, scheduleReload);
+      channel.on("postgres_changes", { event:"UPDATE", schema:"public", table, filter:`workspace_id=eq.${ws}` }, scheduleReload);
+      // DELETE só replica a chave primária (sem workspace_id nas tabelas de PK simples), então o
+      // filtro barraria o evento → escuta sem filtro e recarrega (reload é do meu workspace mesmo).
+      channel.on("postgres_changes", { event:"DELETE", schema:"public", table }, scheduleReload);
+    });
     channel.subscribe();
     return () => { alive = false; if (timer) clearTimeout(timer); supabase.removeChannel(channel); };
   },[onlineWorkspace?.id, loadOnlineData]);
