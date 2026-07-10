@@ -68,6 +68,15 @@ test("6. senha errada mostra o erro na tela (sem zerar o formulário)", async ({
   await expect(page.getByPlaceholder("voce@email.com")).toHaveValue(EMAIL);
 });
 
+test("7. esqueci minha senha abre a tela de redefinição", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Esqueci minha senha" }).click();
+  await expect(page.getByText("Vamos redefinir")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Enviar link de redefinição" })).toBeVisible();
+  await page.getByRole("button", { name: "← Voltar pro login" }).click();
+  await expect(page.locator("form").getByRole("button", { name: "Entrar" })).toBeVisible();
+});
+
 test("5. valor com vírgula (12,34) salva o número certo", async ({ page }) => {
   const marca = `Robo Virgula ${Date.now()}`;
   await login(page);

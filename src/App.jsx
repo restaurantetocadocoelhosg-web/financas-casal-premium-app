@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "3.12";
+const APP_VERSION = "3.13";
 // Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
 const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
 // URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
@@ -982,6 +982,7 @@ export default function App() {
   const [onlineMembers, setOnlineMembers] = useState([]);
   const [onlineNeedsSetup, setOnlineNeedsSetup] = useState(false);
   const [onlineLoading, setOnlineLoading] = useState(SUPABASE_ENABLED);
+  const [recoveryMode, setRecoveryMode] = useState(false); // veio do link "redefinir senha" do e-mail
   const [syncStatus, setSyncStatus] = useState(SUPABASE_ENABLED ? "Conectando ao Supabase..." : "Modo local");
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const [termsAccepted, setTermsAccepted] = useState(null); // null=verificando, true/false depois
@@ -1141,6 +1142,8 @@ export default function App() {
     start();
     const { data: listener } = supabase.auth.onAuthStateChange((_event, authSession) => {
       if (!active) return;
+      // Veio do link "redefinir senha" do e-mail → abre a tela de nova senha.
+      if (_event === "PASSWORD_RECOVERY") setRecoveryMode(true);
       const user = authSession?.user || null;
       setOnlineUser(user);
       if (user) loadOnlineWorkspace(user, localSeedRef.current);
@@ -1381,6 +1384,27 @@ export default function App() {
       return { ok:false, message:"Falha de conexão ao criar a conta. Confira a internet e tente de novo." };
     }
   },[]);
+
+  // "Esqueci minha senha": manda o link de redefinição por e-mail (volta pro app pela allowlist).
+  const onlineResetPassword = useCallback(async (email) => {
+    if (!supabase) return { ok:false, message:"Supabase não configurado." };
+    const cleanEmail = String(email||"").trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes("@")) return { ok:false, message:"Digite o email da sua conta." };
+    const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, { redirectTo: APP_URL });
+    if (error) return { ok:false, message: friendlyAuthError(error) };
+    return { ok:true, message:`Enviamos um link de redefinição para ${cleanEmail}. Abra o e-mail e toque no link — você volta pro app pra criar a senha nova.` };
+  },[]);
+
+  // Salva a senha nova depois que a pessoa voltou pelo link do e-mail.
+  const onlineSetNewPassword = useCallback(async (password) => {
+    if (!supabase) return { ok:false, message:"Supabase não configurado." };
+    if (String(password||"").length < 6) return { ok:false, message:"A senha precisa ter pelo menos 6 caracteres." };
+    const { error } = await supabase.auth.updateUser({ password });
+    if (error) return { ok:false, message: friendlyAuthError(error) };
+    setRecoveryMode(false);
+    showToast("Senha alterada ✓");
+    return { ok:true };
+  },[showToast]);
 
   const onlineVerifyCode = useCallback(async ({ email, token }) => {
     if (!supabase) return { ok:false, message:"Supabase não configurado." };
@@ -1676,12 +1700,17 @@ export default function App() {
 
   if(!loaded) return <LoadingScreen status="Carregando dados locais..." />;
 
+  // Voltou do link "redefinir senha" → cria a senha nova antes de qualquer outra coisa.
+  if (SUPABASE_ENABLED && onlineUser && recoveryMode) {
+    return <NewPasswordGate onSave={onlineSetNewPassword} onCancel={()=>setRecoveryMode(false)}/>;
+  }
+
   if (SUPABASE_ENABLED && onlineLoading && !onlineWorkspace && !onlineNeedsSetup) {
     return <LoadingScreen status={syncStatus} />;
   }
 
   if (SUPABASE_ENABLED && !onlineUser) return (
-    <OnlineAuthGate onLogin={onlineSignIn} onCreate={onlineSignUp} onVerifyCode={onlineVerifyCode} onResendCode={onlineResendCode} syncStatus={syncStatus}/>
+    <OnlineAuthGate onLogin={onlineSignIn} onCreate={onlineSignUp} onVerifyCode={onlineVerifyCode} onResendCode={onlineResendCode} onResetPassword={onlineResetPassword} syncStatus={syncStatus}/>
   );
 
   if (SUPABASE_ENABLED && onlineUser && onlineNeedsSetup) return (
@@ -1836,7 +1865,55 @@ export default function App() {
 /* ═══════════════════════════════════════════════
    ACESSO E ADMIN
 ═══════════════════════════════════════════════ */
-function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, syncStatus }) {
+// Tela de criar senha nova (depois de voltar pelo link "redefinir senha" do e-mail).
+function NewPasswordGate({ onSave, onCancel }) {
+  const [pwd, setPwd] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const salvar = async (e) => {
+    e.preventDefault();
+    if (pwd !== confirm) { setError("As senhas não conferem."); return; }
+    setBusy(true); setError("");
+    const r = await onSave(pwd);
+    setBusy(false);
+    if (!r.ok) setError(r.message);
+  };
+  return (
+    <div style={{minHeight:"100dvh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+      <GlobalStyles/>
+      <Card style={{width:"100%",maxWidth:430,padding:24}}>
+        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:18}}>
+          <div style={{width:48,height:48,borderRadius:14,background:C.greenPale,display:"flex",alignItems:"center",justifyContent:"center"}}>
+            <KeyRound size={22} color={C.caramelDeep}/>
+          </div>
+          <div>
+            <Eyebrow>Redefinir senha</Eyebrow>
+            <div style={{fontFamily:F.display,fontSize:20,fontWeight:600,lineHeight:1.15}}>Crie sua nova senha</div>
+          </div>
+        </div>
+        <form onSubmit={salvar}>
+          <Eyebrow style={{marginBottom:5}}>Nova senha</Eyebrow>
+          <Input autoFocus type="password" value={pwd} onChange={e=>{setPwd(e.target.value);setError("");}} placeholder="Mínimo 6 caracteres" autoComplete="new-password" style={{marginBottom:10}}/>
+          <Eyebrow style={{marginBottom:5}}>Confirmar nova senha</Eyebrow>
+          <Input type="password" value={confirm} onChange={e=>{setConfirm(e.target.value);setError("");}} placeholder="Repita a senha" autoComplete="new-password" style={{marginBottom:12}}/>
+          {error&&(
+            <div style={{background:C.redPale,border:`1px solid rgba(194,65,58,0.18)`,borderRadius:12,padding:"10px 12px",fontSize:12.5,color:C.red,marginBottom:12,fontWeight:700}}>{error}</div>
+          )}
+          <Btn variant="gold" disabled={busy||pwd.length<6} style={{width:"100%",marginBottom:10}}>
+            {busy ? <Loader2 size={15} style={{animation:"spin 1s linear infinite"}}/> : <KeyRound size={15}/>}
+            Salvar nova senha
+          </Btn>
+        </form>
+        <button type="button" onClick={onCancel} style={{background:"none",border:"none",color:C.muted,fontWeight:700,fontSize:12.5,cursor:"pointer",width:"100%",padding:6,fontFamily:F.body}}>
+          Deixar pra depois (manter a senha atual)
+        </button>
+      </Card>
+    </div>
+  );
+}
+
+function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, onResetPassword, syncStatus }) {
   const [mode, setMode] = useState("login");
   const [form, setForm] = useState({ name:"", email:"", password:"", confirm:"" });
   const [busy, setBusy] = useState(false);
@@ -1921,6 +1998,51 @@ function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, syncSta
     if (!result.ok) { setError(result.message); return; }
     setMessage(result.message);
   };
+
+  const enviarReset = async (e) => {
+    e.preventDefault();
+    setBusy(true); setError(""); setMessage("");
+    const result = await onResetPassword(form.email);
+    setBusy(false);
+    if (!result.ok) { setError(result.message); return; }
+    setMessage(result.message);
+  };
+
+  if (mode === "reset") {
+    return (
+      <div style={{minHeight:"100dvh",background:`linear-gradient(180deg,${C.bg} 0%,${C.bgAlt} 100%)`,fontFamily:F.body,color:C.ink,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+        <GlobalStyles/>
+        <Card style={{width:"100%",maxWidth:430,padding:24}}>
+          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:18}}>
+            <div style={{width:48,height:48,borderRadius:14,background:C.greenPale,display:"flex",alignItems:"center",justifyContent:"center"}}>
+              <KeyRound size={22} color={C.caramelDeep}/>
+            </div>
+            <div>
+              <Eyebrow>Esqueci minha senha</Eyebrow>
+              <div style={{fontFamily:F.display,fontSize:20,fontWeight:600,lineHeight:1.15}}>Vamos redefinir<br/>sua senha</div>
+            </div>
+          </div>
+          <form onSubmit={enviarReset}>
+            <Eyebrow style={{marginBottom:5}}>Email da sua conta</Eyebrow>
+            <Input autoFocus type="email" value={form.email} onChange={e=>s("email",e.target.value)} placeholder="voce@email.com" autoComplete="email" style={{marginBottom:12}}/>
+            {error&&(
+              <div style={{background:C.redPale,border:`1px solid rgba(194,65,58,0.18)`,borderRadius:12,padding:"10px 12px",fontSize:12.5,color:C.red,marginBottom:12,fontWeight:700}}>{error}</div>
+            )}
+            {message&&(
+              <div style={{background:C.greenPale,border:`1px solid rgba(23,129,95,0.16)`,borderRadius:12,padding:"10px 12px",fontSize:12.5,color:C.green,marginBottom:12,fontWeight:700}}>{message}</div>
+            )}
+            <Btn variant="gold" disabled={busy} style={{width:"100%",marginBottom:10}}>
+              {busy ? <Loader2 size={15} style={{animation:"spin 1s linear infinite"}}/> : <KeyRound size={15}/>}
+              Enviar link de redefinição
+            </Btn>
+          </form>
+          <button type="button" onClick={()=>{setMode("login");setError("");setMessage("");}} style={{background:"none",border:"none",color:C.muted,fontWeight:700,fontSize:12.5,cursor:"pointer",width:"100%",padding:6,fontFamily:F.body}}>
+            ← Voltar pro login
+          </button>
+        </Card>
+      </div>
+    );
+  }
 
   if (mode === "confirm") {
     return (
@@ -2024,6 +2146,11 @@ function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, syncSta
             {busy ? <Loader2 size={15} style={{animation:"spin 1s linear infinite"}}/> : <KeyRound size={15}/>}
             {lockLeft>0 ? `Aguarde ${lockLeft}s…` : (mode==="create" ? "Criar conta" : "Entrar")}
           </Btn>
+          {mode==="login"&&(
+            <button type="button" onClick={()=>{setMode("reset");setError("");setMessage("");}} style={{background:"none",border:"none",color:C.caramelDeep,fontWeight:700,fontSize:12.5,cursor:"pointer",width:"100%",padding:"10px 6px 2px",fontFamily:F.body}}>
+              Esqueci minha senha
+            </button>
+          )}
         </form>
 
         <div style={{marginTop:14,fontSize:12.3,lineHeight:1.5,color:C.muted,background:C.bluePale,border:`1px solid rgba(37,99,168,0.14)`,borderRadius:12,padding:"10px 12px",display:"flex",gap:8}}>
