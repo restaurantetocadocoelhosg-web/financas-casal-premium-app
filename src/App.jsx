@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "3.9";
+const APP_VERSION = "3.10";
 // Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
 const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
 // URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
@@ -895,13 +895,16 @@ function GlobalStyles() {
       html{-webkit-text-size-adjust:100%}
       /* Estabiliza a tela no celular: sem rolagem lateral, sem "arrasto" que faz a barra do Chrome piscar. */
       html,body{overflow-x:hidden;overscroll-behavior-y:none;margin:0}
+      /* Clique sem atraso no celular: sem espera de duplo-toque/zoom + resposta visual imediata. */
+      button,a,select,input,textarea,[role="button"]{touch-action:manipulation}
+      button:active{transform:scale(.97);transition:transform .05s}
       ::-webkit-scrollbar{width:0}
       input::placeholder,textarea::placeholder{color:${C.faint}}
       select option{background:${C.surface};color:${C.ink}}
       @keyframes spin{to{transform:rotate(360deg)}}
       @keyframes slideUp{from{transform:translateY(36px);opacity:0}to{transform:translateY(0);opacity:1}}
       @keyframes toastIn{from{transform:translate(-50%,16px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
-      .su{animation:slideUp .3s cubic-bezier(.4,0,.2,1)}
+      .su{animation:slideUp .18s cubic-bezier(.4,0,.2,1)}
       @media(max-width:360px){.bottom-nav-shell{gap:0;padding:5px}.bottom-nav-shell button{min-width:44px;padding-left:8px!important;padding-right:8px!important}}
       @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
     `}</style>
@@ -1155,7 +1158,7 @@ export default function App() {
       try {
         await loadOnlineMembers(ws);
         const fresh = await loadOnlineData(ws);
-        setData(prev=>{ persistAll(fresh); return fresh; });
+        setData(prev => JSON.stringify(prev)===JSON.stringify(fresh) ? prev : (persistAll(fresh), fresh));
       } catch {}
       running = false;
     };
@@ -1180,7 +1183,12 @@ export default function App() {
       timer = setTimeout(async ()=>{
         if (!alive) return;
         if (Date.now() - lastWriteRef.current < 2500) { scheduleReload(); return; } // acabei de gravar → espera assentar
-        try { const fresh = await loadOnlineData(ws); if (alive) setData(()=>{ persistAll(fresh); return fresh; }); } catch {}
+        try {
+          const fresh = await loadOnlineData(ws);
+          // Só re-renderiza se algo REALMENTE mudou (a maioria dos eventos é eco da própria gravação,
+          // já aplicada na tela — redesenhar de novo causava engasgo/atraso no toque seguinte).
+          if (alive) setData(prev => JSON.stringify(prev)===JSON.stringify(fresh) ? prev : (persistAll(fresh), fresh));
+        } catch {}
       }, 600);
     };
     const tables = ["finance_tx","finance_goals","finance_fixed","finance_categories","finance_avatars","finance_sinonimos"];
