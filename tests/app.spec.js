@@ -9,6 +9,12 @@ const PASSWORD = process.env.E2E_PASSWORD;
 test.describe.configure({ mode: "serial" });
 
 async function login(page) {
+  // Pré-adia o alerta de contas do dia (senão o modal pipoca no meio do teste e bloqueia os cliques).
+  await page.addInitScript(() => {
+    const d = new Date();
+    const hoje = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+    localStorage.setItem("prosperidade-bills-snooze", hoje);
+  });
   await page.goto("/");
   await expect(page.getByPlaceholder("voce@email.com")).toBeVisible();
   await page.getByPlaceholder("voce@email.com").fill(EMAIL);
@@ -90,6 +96,63 @@ test("5. valor com vírgula (12,34) salva o número certo", async ({ page }) => 
   await linha.getByTitle("Excluir").click();
   await page.getByRole("button", { name: "Confirmar exclusão" }).click();
   await expect(page.getByText(marca)).toHaveCount(0);
+});
+
+test("8. meta: criar → depositar com vírgula → excluir", async ({ page }) => {
+  const nome = `Robo Meta ${Date.now()}`;
+  await login(page);
+  await page.getByRole("button", { name: "Metas" }).click();
+  await page.getByRole("button", { name: "Nova" }).click();
+  await page.getByPlaceholder("Nome da meta (ex: Viagem)").fill(nome);
+  await page.getByPlaceholder("Valor alvo (R$)").fill("1.000,00");
+  await page.getByRole("button", { name: "Criar meta" }).click();
+  await expect(page.getByText(nome)).toBeVisible();
+
+  // Deposita 100,50 (com vírgula) e confere o progresso.
+  await page.getByText(nome).click();
+  await page.getByPlaceholder("Valor (R$)").fill("100,50");
+  await page.getByRole("button", { name: "Guardar na meta" }).click();
+  await expect(page.getByText("R$ 100,50").first()).toBeVisible();
+
+  // Fecha a sheet (toque no fundo escuro) e exclui a meta.
+  await page.mouse.click(195, 40);
+  await expect(page.getByRole("button", { name: "Nova" })).toBeVisible();
+  await page.getByTitle("Excluir").click();
+  await page.getByRole("button", { name: "Confirmar exclusão" }).click();
+  await expect(page.getByText(nome)).toHaveCount(0);
+});
+
+test("9. conta fixa: paga vira gasto no extrato, desmarcar tira, cartão não vira", async ({ page }) => {
+  const nome = `Robo Conta ${Date.now()}`;
+  await login(page);
+
+  // Cria a conta fixa (categoria padrão Energia = conta normal, não cartão).
+  await page.getByText("Gastos fixos").click();
+  await page.getByRole("button", { name: "Adicionar conta fixa" }).click();
+  await page.getByPlaceholder("Nome (ex: Internet)").fill(nome);
+  await page.getByPlaceholder("Valor", { exact: true }).fill("55,90");
+  await page.getByRole("button", { name: "Salvar", exact: true }).click();
+  await expect(page.getByText(nome)).toBeVisible();
+
+  // Marca como paga → tem que virar GASTO no extrato.
+  await page.getByTitle("Marcar como pago").click();
+  await expect(page.getByText("Pago este mês ✓")).toBeVisible();
+  await page.getByRole("button", { name: "Extrato" }).click();
+  await expect(page.getByText(`${nome} (conta fixa)`)).toBeVisible();
+
+  // Desmarca → o gasto tem que SUMIR do extrato.
+  await page.getByRole("button", { name: "Início" }).click();
+  await page.getByText("Gastos fixos").click();
+  await page.getByTitle("Marcar como não pago").click();
+  await page.getByRole("button", { name: "Extrato" }).click();
+  await expect(page.getByText(`${nome} (conta fixa)`)).toHaveCount(0);
+
+  // Limpeza: exclui a conta fixa.
+  await page.getByRole("button", { name: "Início" }).click();
+  await page.getByText("Gastos fixos").click();
+  await page.getByTitle("Excluir").click();
+  await page.getByRole("button", { name: "Confirmar exclusão" }).click();
+  await expect(page.getByText(nome)).toHaveCount(0);
 });
 
 test("4. lançamento salvo de verdade no servidor (recarrega e continua)", async ({ page }) => {

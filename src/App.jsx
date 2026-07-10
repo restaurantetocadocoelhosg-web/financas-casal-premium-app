@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "3.13";
+const APP_VERSION = "3.14";
 // Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
 const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
 // URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
@@ -1541,13 +1541,13 @@ export default function App() {
     if (online) await supabase.from("finance_goals").delete().eq("id", id);
   },[patchData,online,wsId]);
   const addFixed = useCallback(async (f)=>{
-    const fixed = {...f, id:uid(), valor:parseMoney(f.valor), dia:Number(f.dia)||1, variavel:!!f.variavel, paidMonths:[]};
+    const fixed = {...f, id:uid(), valor:parseMoney(f.valor), dia:Math.min(Math.max(Number(f.dia)||1,1),31), variavel:!!f.variavel, paidMonths:[]};
     patchData(d=>({...d, fixedExpenses:[...d.fixedExpenses, fixed]}));
     showToast("Conta fixa salva ✓");
     if (online) { const {error}=await supabase.from("finance_fixed").insert(fixedToRow(fixed, wsId)); if(error) showToast("⚠ Falha ao salvar a conta online"); }
   },[patchData,online,wsId,showToast]);
   const updateFixed = useCallback(async (f)=>{
-    const fixed = {...f, valor:parseMoney(f.valor), dia:Number(f.dia)||1};
+    const fixed = {...f, valor:parseMoney(f.valor), dia:Math.min(Math.max(Number(f.dia)||1,1),31)};
     patchData(d=>({...d, fixedExpenses:d.fixedExpenses.map(x=>x.id===fixed.id?fixed:x)}));
     if (online) await supabase.from("finance_fixed").update(fixedToRow(fixed, wsId)).eq("id", fixed.id);
   },[patchData,online,wsId]);
