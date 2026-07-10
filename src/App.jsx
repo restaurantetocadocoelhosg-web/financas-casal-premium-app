@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "3.10";
+const APP_VERSION = "3.11";
 // Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
 const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
 // URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
@@ -67,6 +67,8 @@ function friendlyAuthError(error) {
   const m = String(error?.message || "");
   if (code === "over_email_send_rate_limit" || /rate limit/i.test(m))
     return "Muitos cadastros em pouco tempo — o envio de e-mail está no limite por ~1 hora. Espere um pouco e tente de novo. (Para uso real, configure um provedor de e-mail/SMTP no Supabase.)";
+  if (code === "invalid_credentials" || /invalid login credentials/i.test(m))
+    return "Email ou senha incorretos. Confira e tente de novo.";
   if (code === "email_address_invalid" || (/invalid/i.test(m) && /email/i.test(m)))
     return "Esse e-mail parece inválido. Confira e tente de novo.";
   if (code === "user_already_exists" || /already reg|already been|already exists/i.test(m))
@@ -134,6 +136,15 @@ const numBR = (value) => {
   return Number(clean)||0;
 };
 const txDate = (t) => new Date(`${t.data}T12:00:00`);
+// Dinheiro digitado à brasileira: aceita "12,34", "1.234,56", "R$ 50". Devolve número (0 se inválido).
+const parseMoney = (v) => {
+  if (typeof v === "number") return isFinite(v) ? v : 0;
+  const s = String(v ?? "").replace(/[R$\s]/gi, "");
+  if (!s) return 0;
+  const norm = s.includes(",") ? s.replace(/\./g, "").replace(",", ".") : s;
+  const n = Number(norm);
+  return isFinite(n) ? n : 0;
+};
 const inMonth = (t, month) => {
   const d = txDate(t);
   return d.getFullYear()===month.y && d.getMonth()===month.m;
@@ -1335,7 +1346,7 @@ export default function App() {
     const { error } = await supabase.auth.signInWithPassword({ email:cleanEmail, password });
     if (error) {
       setOnlineLoading(false);
-      return { ok:false, message:error.message };
+      return { ok:false, message:friendlyAuthError(error) };
     }
     return { ok:true };
   },[]);
@@ -1364,7 +1375,7 @@ export default function App() {
       setOnlineLoading(false);
       if (error) return { ok:false, message: friendlyAuthError(error) };
       if (!created.session) {
-        return { ok:true, needsConfirmation:true, email:cleanEmail, message:`Enviamos um código de 6 dígitos para ${cleanEmail}. Digite abaixo para confirmar.` };
+        return { ok:true, needsConfirmation:true, email:cleanEmail, message:`Conta criada com sucesso! ✓ Enviamos um código de 6 dígitos para ${cleanEmail} — digite abaixo para ativar.` };
       }
       return { ok:true };
     } catch (e) {
@@ -1511,13 +1522,13 @@ export default function App() {
     if (online) await supabase.from("finance_goals").delete().eq("id", id);
   },[patchData,online,wsId]);
   const addFixed = useCallback(async (f)=>{
-    const fixed = {...f, id:uid(), valor:Number(f.valor)||0, dia:Number(f.dia)||1, variavel:!!f.variavel, paidMonths:[]};
+    const fixed = {...f, id:uid(), valor:parseMoney(f.valor), dia:Number(f.dia)||1, variavel:!!f.variavel, paidMonths:[]};
     patchData(d=>({...d, fixedExpenses:[...d.fixedExpenses, fixed]}));
     showToast("Conta fixa salva ✓");
     if (online) { const {error}=await supabase.from("finance_fixed").insert(fixedToRow(fixed, wsId)); if(error) showToast("⚠ Falha ao salvar a conta online"); }
   },[patchData,online,wsId,showToast]);
   const updateFixed = useCallback(async (f)=>{
-    const fixed = {...f, valor:Number(f.valor)||0, dia:Number(f.dia)||1};
+    const fixed = {...f, valor:parseMoney(f.valor), dia:Number(f.dia)||1};
     patchData(d=>({...d, fixedExpenses:d.fixedExpenses.map(x=>x.id===fixed.id?fixed:x)}));
     if (online) await supabase.from("finance_fixed").update(fixedToRow(fixed, wsId)).eq("id", fixed.id);
   },[patchData,online,wsId]);
@@ -1588,6 +1599,8 @@ export default function App() {
       if (safe.customCategories.length) await supabase.from("finance_categories").upsert(safe.customCategories.map(c=>({workspace_id:wsId, name:c.name, emoji:c.emoji, tipo:c.tipo})));
       const avEntries = Object.entries(safe.avatars||{});
       if (avEntries.length) await supabase.from("finance_avatars").upsert(avEntries.map(([person,image])=>({workspace_id:wsId, person, image})));
+      const sinEntries = Object.entries(safe.sinonimos||{});
+      if (sinEntries.length) await supabase.from("finance_sinonimos").upsert(sinEntries.map(([termo,categoria])=>({workspace_id:wsId, termo, categoria})));
     }
   },[patchData,online,wsId,showToast]);
 
@@ -1842,8 +1855,31 @@ function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, syncSta
   const [captchaResp, setCaptchaResp] = useState("");
   const s = (k,v) => { setForm(f=>({...f,[k]:v})); setError(""); setMessage(""); };
 
+  // Trava anti-força-bruta: 5 tentativas erradas → bloqueia por 1 minuto (sobrevive a recarregar a página).
+  const LOCK_KEY = "prosper-auth-lock";
+  const readLock = () => { try { return JSON.parse(localStorage.getItem(LOCK_KEY)) || { n:0, until:0 }; } catch { return { n:0, until:0 }; } };
+  const [lockLeft, setLockLeft] = useState(0);
+  useEffect(()=>{
+    const tick = () => setLockLeft(Math.max(0, Math.ceil((readLock().until - Date.now())/1000)));
+    tick();
+    const t = setInterval(tick, 500);
+    return ()=>clearInterval(t);
+  },[]);
+  const registraFalha = () => {
+    const lock = readLock();
+    const n = lock.n + 1;
+    if (n >= 5) { localStorage.setItem(LOCK_KEY, JSON.stringify({ n:0, until:Date.now()+60000 })); return true; }
+    localStorage.setItem(LOCK_KEY, JSON.stringify({ n, until:0 }));
+    return false;
+  };
+
   const submit = async (e) => {
     e.preventDefault();
+    const lock = readLock();
+    if (Date.now() < lock.until) {
+      setError(`Muitas tentativas seguidas. Aguarde ${Math.ceil((lock.until-Date.now())/1000)} segundos e tente de novo.`);
+      return;
+    }
     if (mode === "create") {
       if (Number(captchaResp) !== captcha.a + captcha.b) {
         setError("Confirme a conta: resolva a soma de segurança corretamente.");
@@ -1858,9 +1894,11 @@ function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, syncSta
     setBusy(false);
     if (mode === "create" && !result.ok) { setCaptcha(novoCaptcha()); setCaptchaResp(""); }
     if (!result.ok) {
-      setError(result.message);
+      const bloqueou = registraFalha();
+      setError(bloqueou ? "Muitas tentativas seguidas. Por segurança, espere 1 minuto antes de tentar de novo." : result.message);
       return;
     }
+    localStorage.removeItem(LOCK_KEY);
     if (result.needsConfirmation) {
       setPendingEmail(result.email);
       setMode("confirm");
@@ -1987,9 +2025,9 @@ function OnlineAuthGate({ onLogin, onCreate, onVerifyCode, onResendCode, syncSta
               {message}
             </div>
           )}
-          <Btn variant="gold" disabled={busy} style={{width:"100%"}}>
+          <Btn variant="gold" disabled={busy||lockLeft>0} style={{width:"100%"}}>
             {busy ? <Loader2 size={15} style={{animation:"spin 1s linear infinite"}}/> : <KeyRound size={15}/>}
-            {mode==="create" ? "Criar conta" : "Entrar"}
+            {lockLeft>0 ? `Aguarde ${lockLeft}s…` : (mode==="create" ? "Criar conta" : "Entrar")}
           </Btn>
         </form>
 
@@ -3024,7 +3062,7 @@ function FixedSection({ fixed, onAdd, onUpdate, onDelete, onTogglePaid, customCa
           <div style={{fontSize:11.5,fontWeight:700,color:C.muted}}>{editId==="new"?"Nova conta fixa":"Editar conta fixa"}</div>
           <div style={{display:"flex",gap:8}}>
             <Input placeholder="Nome (ex: Internet)" value={form.nome} onChange={e=>setForm({...form,nome:e.target.value})} style={{flex:2}}/>
-            <Input type="number" inputMode="decimal" placeholder="Valor" value={form.valor} onChange={e=>setForm({...form,valor:e.target.value})} style={{flex:1}}/>
+            <Input type="text" inputMode="decimal" placeholder="Valor" value={form.valor} onChange={e=>setForm({...form,valor:e.target.value})} style={{flex:1}}/>
           </div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
             <div style={{flex:1,display:"flex",alignItems:"center",gap:6}}>
@@ -3039,7 +3077,7 @@ function FixedSection({ fixed, onAdd, onUpdate, onDelete, onTogglePaid, customCa
           </label>
           <div style={{display:"flex",gap:8}}>
             <Btn variant="outline" small onClick={()=>{setEditId(null);setForm(empty);}} style={{flex:1}}>Cancelar</Btn>
-            <Btn variant="gold" small onClick={salvar} disabled={!form.nome||!(Number(form.valor)>0)} style={{flex:2}}><Check size={14}/> Salvar</Btn>
+            <Btn variant="gold" small onClick={salvar} disabled={!form.nome||!(parseMoney(form.valor)>0)} style={{flex:2}}><Check size={14}/> Salvar</Btn>
           </div>
         </div>
       ):(
@@ -3261,12 +3299,12 @@ function Metas({ goals, onAdd, onUpdate, onDelete }) {
           </div>
           <Input placeholder="Nome da meta (ex: Viagem)" value={form.nome} onChange={e=>setForm({...form,nome:e.target.value})} style={{marginBottom:10}}/>
           <div style={{display:"flex",gap:8,marginBottom:12}}>
-            <Input type="number" inputMode="decimal" placeholder="Valor alvo (R$)" value={form.alvo} onChange={e=>setForm({...form,alvo:e.target.value})} style={{flex:1}}/>
+            <Input type="text" inputMode="decimal" placeholder="Valor alvo (R$)" value={form.alvo} onChange={e=>setForm({...form,alvo:e.target.value})} style={{flex:1}}/>
             <Input type="date" value={form.prazo||""} onChange={e=>setForm({...form,prazo:e.target.value})} style={{flex:1}}/>
           </div>
           <div style={{display:"flex",gap:8}}>
             <Btn variant="outline" onClick={()=>setForm(null)} style={{flex:1}}>Cancelar</Btn>
-            <Btn variant="gold" onClick={()=>{if(form.nome&&Number(form.alvo)>0){onAdd({...form,alvo:Number(form.alvo)});setForm(null);}}} style={{flex:2}}><Check size={15}/> Criar meta</Btn>
+            <Btn variant="gold" onClick={()=>{const alvo=parseMoney(form.alvo); if(form.nome&&alvo>0){onAdd({...form,alvo});setForm(null);}}} style={{flex:2}}><Check size={15}/> Criar meta</Btn>
           </div>
         </Card>
       )}
@@ -3285,7 +3323,7 @@ function GoalSheet({ goal, onClose, onUpdate }) {
   const [form, setForm] = useState({ valor:"", data:todayISO(), motivo:"" });
 
   const guardar = () => {
-    const v = Number(form.valor||0);
+    const v = parseMoney(form.valor);
     if (v<=0) return;
     const novo = { id:uid(), valor:v, data:form.data||todayISO(), motivo:(form.motivo||"").trim() };
     onUpdate({ ...goal, saved:saved+v, deposits:[...deposits, novo] });
@@ -3315,11 +3353,11 @@ function GoalSheet({ goal, onClose, onUpdate }) {
 
       <Eyebrow style={{marginBottom:8}}>Guardar um valor</Eyebrow>
       <div style={{display:"flex",gap:8,marginBottom:8}}>
-        <Input type="number" inputMode="decimal" placeholder="Valor (R$)" value={form.valor} onChange={e=>setForm(f=>({...f,valor:e.target.value}))} style={{flex:1.2,fontFamily:F.display,fontWeight:600}}/>
+        <Input type="text" inputMode="decimal" placeholder="Valor (R$)" value={form.valor} onChange={e=>setForm(f=>({...f,valor:e.target.value}))} style={{flex:1.2,fontFamily:F.display,fontWeight:600}}/>
         <Input type="date" value={form.data} onChange={e=>setForm(f=>({...f,data:e.target.value}))} style={{flex:1}}/>
       </div>
       <Input placeholder="Motivo (opcional) — ex: extra do serviço X" value={form.motivo} onChange={e=>setForm(f=>({...f,motivo:e.target.value}))} style={{marginBottom:10}}/>
-      <Btn variant="gold" onClick={guardar} disabled={!(Number(form.valor)>0)} style={{width:"100%",marginBottom:18}}><Plus size={15}/> Guardar na meta</Btn>
+      <Btn variant="gold" onClick={guardar} disabled={!(parseMoney(form.valor)>0)} style={{width:"100%",marginBottom:18}}><Plus size={15}/> Guardar na meta</Btn>
 
       <Eyebrow style={{marginBottom:8}}>Extrato de depósitos</Eyebrow>
       {ordenados.length===0 && saldoAnterior<=0 && (
@@ -3432,7 +3470,7 @@ function AISheet({ onClose, onConfirm, defaultPerson, people=[], avatars, custom
           // Aprendizado: se você corrigiu a categoria que a IA sugeriu, ela guarda o termo → categoria certa.
           const sug = sugRef.current;
           if (sug && sug.termo && onLearn && normalize(limpo.categoria)!==normalize(sug.categoria)) onLearn(sug.termo, limpo.categoria, false);
-          onConfirm({...limpo,valor:Number(limpo.valor)});
+          onConfirm({...limpo,valor:parseMoney(limpo.valor)});
         }} saveLabel="Confirmar e salvar"/>
       )}
     </Sheet>
@@ -3504,7 +3542,7 @@ function NotaSheet({ onClose, onConfirm, defaultPerson, people=[], avatars, cust
         </>
       ):(
         <>
-          <TxForm tx={pending} avatars={avatars} people={people} customCategories={customCategories} onAddCategory={onAddCategory} onChange={setPending} onCancel={()=>setPending(null)} onSave={()=>{const{_duvida,_confianca,...limpo}=pending;onConfirm({...limpo,valor:Number(limpo.valor)}, foto);}} saveLabel="Salvar com a foto"/>
+          <TxForm tx={pending} avatars={avatars} people={people} customCategories={customCategories} onAddCategory={onAddCategory} onChange={setPending} onCancel={()=>setPending(null)} onSave={()=>{const{_duvida,_confianca,...limpo}=pending;onConfirm({...limpo,valor:parseMoney(limpo.valor)}, foto);}} saveLabel="Salvar com a foto"/>
         </>
       )}
     </Sheet>
@@ -3519,6 +3557,8 @@ function EditSheet({ tx, avatars, people=[], customCategories=[], onAddCategory,
   const [foto, setFoto] = useState(null);
   const [fotoRemovida, setFotoRemovida] = useState(false);
   const [fotoExistente, setFotoExistente] = useState(null);
+  const [valErr, setValErr] = useState(false);
+  useEffect(()=>{ setValErr(false); },[form.valor]);
   const fileRef = useRef(null);
 
   useEffect(()=>{ if(tx.id&&tx.foto) loadPhoto(tx.id).then(setFotoExistente); },[tx]);
@@ -3544,8 +3584,9 @@ function EditSheet({ tx, avatars, people=[], customCategories=[], onAddCategory,
           <ImagePlus size={16} color={C.caramelDeep}/> Anexar foto (recibo, produto…)
         </button>
       )}
+      {valErr&&<div style={{background:C.redPale,border:`1px solid rgba(194,65,58,0.18)`,borderRadius:12,padding:"9px 12px",fontSize:12.5,color:C.red,marginBottom:10,fontWeight:700}}>Confira o valor — digite um número maior que zero (ex.: 12,50).</div>}
       <TxForm tx={form} avatars={avatars} people={people} customCategories={customCategories} onAddCategory={onAddCategory} onChange={setForm} onCancel={onClose}
-        onSave={()=>{if(Number(form.valor)>0)onSave({...form,valor:Number(form.valor)}, foto, fotoRemovida&&!foto);}}
+        onSave={()=>{const v=parseMoney(form.valor); if(v>0)onSave({...form,valor:v}, foto, fotoRemovida&&!foto); else setValErr(true);}}
         saveLabel={tx.id?"Salvar alterações":"Salvar"}/>
     </Sheet>
   );
@@ -3589,7 +3630,7 @@ function TxForm({ tx, avatars, people=[], customCategories=[], onAddCategory, on
       <div style={{display:"flex",gap:8}}>
         <div style={{flex:1.2}}>
           <Eyebrow style={{marginBottom:4}}>Valor</Eyebrow>
-          <Input type="number" inputMode="decimal" value={tx.valor} onChange={e=>s("valor",e.target.value)} placeholder="0,00" style={{fontFamily:F.display,fontSize:18,fontWeight:600}}/>
+          <Input type="text" inputMode="decimal" value={tx.valor} onChange={e=>s("valor",e.target.value)} placeholder="0,00" style={{fontFamily:F.display,fontSize:18,fontWeight:600}}/>
         </div>
         <div style={{flex:1}}>
           <Eyebrow style={{marginBottom:4}}>Data</Eyebrow>
@@ -3712,12 +3753,12 @@ function ChatIA({ transactions, fixedExpenses, goals, people=[], customCategorie
 
   const salvar = (idx, tx) => {
     const {_duvida,_confianca,...limpo} = tx;
-    onAddTx?.({...limpo, valor:Number(limpo.valor)});
+    onAddTx?.({...limpo, valor:parseMoney(limpo.valor)});
     setMsgs(m=>m.map((x,i)=>i===idx?{...x,estado:"salvo"}:x));
   };
   const ajustar = (idx, tx) => {
     const {_duvida,_confianca,...limpo} = tx;
-    onEditTx?.({...limpo, valor:Number(limpo.valor)});
+    onEditTx?.({...limpo, valor:parseMoney(limpo.valor)});
     setMsgs(m=>m.map((x,i)=>i===idx?{...x,estado:"editar"}:x));
   };
 

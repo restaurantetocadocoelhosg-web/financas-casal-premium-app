@@ -18,6 +18,16 @@ async function login(page) {
   await expect(page.getByRole("button", { name: "Extrato" })).toBeVisible({ timeout: 30_000 });
 }
 
+// Lança um gasto manual e garante que a tela de salvar FECHOU (= salvou de verdade).
+async function lancarManual(page, valor, marca) {
+  await page.getByText("Manual", { exact: true }).click();
+  await expect(page.getByText("Novo lançamento")).toBeVisible();
+  await page.getByPlaceholder("0,00").fill(valor);
+  await page.getByPlaceholder("Ex.: compras da semana").fill(marca);
+  await page.getByRole("button", { name: "Salvar", exact: true }).click();
+  await expect(page.getByText("Novo lançamento")).toBeHidden({ timeout: 10_000 });
+}
+
 test("1. tela de login abre", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByText("Prosperidade").first()).toBeVisible();
@@ -34,11 +44,7 @@ test("3. lançar manual → aparece no extrato → excluir (2 toques) → some",
   await login(page);
 
   // Lançamento manual pelo atalho "Manual" do Início.
-  await page.getByText("Manual", { exact: true }).click();
-  await expect(page.getByText("Novo lançamento")).toBeVisible();
-  await page.getByPlaceholder("0,00").fill("12.34");
-  await page.getByPlaceholder("Ex.: compras da semana").fill(marca);
-  await page.getByRole("button", { name: "Salvar", exact: true }).click();
+  await lancarManual(page, "12.34", marca);
 
   // Confere no Extrato.
   await page.getByRole("button", { name: "Extrato" }).click();
@@ -51,14 +57,26 @@ test("3. lançar manual → aparece no extrato → excluir (2 toques) → some",
   await expect(page.getByText(marca)).toHaveCount(0);
 });
 
+test("5. valor com vírgula (12,34) salva o número certo", async ({ page }) => {
+  const marca = `Robo Virgula ${Date.now()}`;
+  await login(page);
+  await lancarManual(page, "12,34", marca);
+  await page.getByRole("button", { name: "Extrato" }).click();
+  await expect(page.getByText(marca)).toBeVisible();
+  // O valor tem que aparecer como 12,34 — não 0, não 1234.
+  const linha = page.locator("div").filter({ hasText: marca }).filter({ has: page.getByTitle("Excluir") }).last();
+  await expect(linha).toContainText("12,34");
+  // Limpeza.
+  await linha.getByTitle("Excluir").click();
+  await page.getByRole("button", { name: "Confirmar exclusão" }).click();
+  await expect(page.getByText(marca)).toHaveCount(0);
+});
+
 test("4. lançamento salvo de verdade no servidor (recarrega e continua)", async ({ page }) => {
   const marca = `Robo Persiste ${Date.now()}`;
   await login(page);
 
-  await page.getByText("Manual", { exact: true }).click();
-  await page.getByPlaceholder("0,00").fill("7.89");
-  await page.getByPlaceholder("Ex.: compras da semana").fill(marca);
-  await page.getByRole("button", { name: "Salvar", exact: true }).click();
+  await lancarManual(page, "7.89", marca);
   await page.getByRole("button", { name: "Extrato" }).click();
   await expect(page.getByText(marca)).toBeVisible();
 
