@@ -1306,8 +1306,10 @@ export default function App() {
     (async () => {
       try {
         const r = await supabase
+        console.log("[TERMS] Verificando aceite...", { email: onlineUser.email, TERMS_APP_NAME, TERMS_VERSION });
           .from("terms_acceptance")
           .select("id")
+        console.log("[TERMS] Query result:", r);
           .eq("user_name", onlineUser.email)
           .eq("app_name", TERMS_APP_NAME)
           .eq("terms_version", TERMS_VERSION)
