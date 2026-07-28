@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "3.14";
+const APP_VERSION = "3.15";
 // Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
 const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
 // URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
@@ -1305,7 +1305,7 @@ export default function App() {
     let alive = true;
     (async () => {
       try {
-        const r = await supabase
+        const { data, error } = await supabase
           .from("terms_acceptance")
           .select("id")
           .eq("user_name", onlineUser.email)
@@ -1313,8 +1313,16 @@ export default function App() {
           .eq("terms_version", TERMS_VERSION)
           .limit(1);
         if (!alive) return;
-        setTermsAccepted(Boolean(r.data && r.data.length));
-      } catch {
+        // O client do Supabase nao lanca em erro de banco: devolve { data, error }.
+        // Sem checar, uma falha de permissao (RLS) vira "nao aceitou" silencioso.
+        if (error) {
+          console.error("[termos] falha ao verificar aceite:", error.message, error.code || "");
+          setTermsAccepted(false);
+          return;
+        }
+        setTermsAccepted(Boolean(data && data.length));
+      } catch (e) {
+        console.error("[termos] erro de rede ao verificar aceite:", e?.message);
         if (alive) setTermsAccepted(false);
       }
     })();
@@ -1324,7 +1332,7 @@ export default function App() {
   const acceptTerms = useCallback(async () => {
     if (!supabase || !onlineUser) return { ok:false };
     try {
-      await supabase.from("terms_acceptance").insert({
+      const { error } = await supabase.from("terms_acceptance").insert({
         user_name: onlineUser.email,
         app_name: TERMS_APP_NAME,
         terms_version: TERMS_VERSION,
@@ -1332,9 +1340,16 @@ export default function App() {
         ip_address: null,
         user_agent: typeof navigator !== "undefined" ? navigator.userAgent : null,
       });
+      if (error) {
+        // 23505 = unique violation: ja existe aceite desta versao, entao esta aceito.
+        if (error.code === "23505") { setTermsAccepted(true); return { ok:true }; }
+        console.error("[termos] falha ao registrar aceite:", error.message, error.code || "");
+        return { ok:false, message: error.message || "Erro ao registrar aceite." };
+      }
       setTermsAccepted(true);
       return { ok:true };
     } catch (e) {
+      console.error("[termos] erro de rede ao registrar aceite:", e?.message);
       return { ok:false, message: e?.message || "Erro ao registrar aceite." };
     }
   }, [onlineUser]);
