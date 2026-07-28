@@ -1321,25 +1321,32 @@ export default function App() {
     return () => { alive = false; };
   }, [onlineUser, onlineWorkspace]);
 
+
   const acceptTerms = useCallback(async () => {
     if (!supabase || !onlineUser) return { ok:false };
     try {
-      await supabase.from("terms_acceptance").insert({
-        user_name: onlineUser.email,
-        app_name: TERMS_APP_NAME,
-        terms_version: TERMS_VERSION,
-        accepted_at: new Date().toISOString(),
-        ip_address: null,
-        user_agent: typeof navigator !== "undefined" ? navigator.userAgent : null,
-      });
+      await supabase.from("terms_acceptance").upsert(
+        {
+          user_name: onlineUser.email,
+          app_name: TERMS_APP_NAME,
+          terms_version: TERMS_VERSION,
+          accepted_at: new Date().toISOString(),
+          ip_address: null,
+          user_agent: typeof navigator !== "undefined" ? navigator.userAgent : null,
+        },
+        { onConflict: "user_name,app_name,terms_version" }
+      );
       setTermsAccepted(true);
       return { ok:true };
     } catch (e) {
+      // Se for erro de constraint duplicate key, considera como já aceito
+      if (e?.code === "23505" || e?.status === 409) {
+        setTermsAccepted(true);
+        return { ok:true };
+      }
       return { ok:false, message: e?.message || "Erro ao registrar aceite." };
     }
   }, [onlineUser]);
-
-  const onlineSignIn = useCallback(async ({ email, password }) => {
     if (!supabase) return { ok:false, message:"Supabase não configurado." };
     const cleanEmail = String(email||"").trim().toLowerCase();
     if (!cleanEmail || String(password||"").length < 6) {
