@@ -986,6 +986,11 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState(SUPABASE_ENABLED ? "Conectando ao Supabase..." : "Modo local");
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const TERMS_STORAGE_KEY = `terms-accepted-${TERMS_APP_NAME}-${TERMS_VERSION}`;
+  const [termsAccepted, setTermsAccepted] = useState(()=>{
+    if (!SUPABASE_ENABLED) return true;
+    try { return localStorage.getItem(TERMS_STORAGE_KEY) !== null; }
+    catch { return null; }
+  });
 
   const localSeedRef = useRef(DEFAULT_DATA);
   const lastWriteRef = useRef(0); // marca a última gravação local (guarda contra o refresh apagar dado recém-criado)
@@ -1294,22 +1299,18 @@ export default function App() {
       setOnlineMember(null);
       setOnlineMembers([]);
       setOnlineNeedsSetup(false);
-      setOnlineLoading(false);
-      setSyncStatus("Sessão encerrada.");
-      setTermsAccepted(null);
-    }
-  },[]);
 
-
-  // Check localStorage first (super fast)
+  // Check localStorage first (super fast), depois sincroniza com banco
   useEffect(() => {
-    if (!SUPABASE_ENABLED || !onlineUser) return;
+    if (!SUPABASE_ENABLED || !supabase || !onlineUser) return;
+    
     const cached = localStorage.getItem(TERMS_STORAGE_KEY);
     if (cached === onlineUser.email) {
-      console.log("[TERMS] Cached - já aceito");
+      console.log("[TERMS] Usando cache local");
       setTermsAccepted(true);
       return;
     }
+    
     let alive = true;
     (async () => {
       try {
@@ -1321,18 +1322,34 @@ export default function App() {
           .eq("app_name", TERMS_APP_NAME)
           .eq("terms_version", TERMS_VERSION)
           .maybeSingle();
+        
         if (error) {
-          console.error("[TERMS] Erro query:", error);
-          setTermsAccepted(false);
+          console.error("[TERMS] Erro query:", error?.message);
           return;
         }
-        const hasAccepted = !!data;
-        console.log("[TERMS] Resultado:", hasAccepted);
-        if (hasAccepted) localStorage.setItem(TERMS_STORAGE_KEY, onlineUser.email);
-        if (alive) setTermsAccepted(hasAccepted);
+        
+        if (alive) {
+          const hasAccepted = !!data;
+          console.log("[TERMS] Resultado banco:", hasAccepted);
+          if (hasAccepted) {
+            localStorage.setItem(TERMS_STORAGE_KEY, onlineUser.email);
+          }
+          setTermsAccepted(hasAccepted);
+        }
       } catch (e) {
-        console.error("[TERMS] Erro:", e);
-        if (alive) setTermsAccepted(false);
+        console.error("[TERMS] Erro:", e?.message);
+      }
+    })();
+    return () => { alive = false; };
+  }, [onlineUser]);
+          console.log("[TERMS] Resultado banco:", hasAccepted);
+          if (hasAccepted) {
+            localStorage.setItem(TERMS_STORAGE_KEY, onlineUser.email);
+          }
+          setTermsAccepted(hasAccepted);
+        }
+      } catch (e) {
+        console.error("[TERMS] Erro:", e?.message);
       }
     })();
     return () => { alive = false; };
