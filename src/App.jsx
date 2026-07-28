@@ -985,7 +985,8 @@ export default function App() {
   const [recoveryMode, setRecoveryMode] = useState(false); // veio do link "redefinir senha" do e-mail
   const [syncStatus, setSyncStatus] = useState(SUPABASE_ENABLED ? "Conectando ao Supabase..." : "Modo local");
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
-  const [termsAccepted, setTermsAccepted] = useState(null); // null=verificando, true/false depois
+  const TERMS_STORAGE_KEY = `terms-accepted-${TERMS_APP_NAME}-${TERMS_VERSION}`;
+
   const localSeedRef = useRef(DEFAULT_DATA);
   const lastWriteRef = useRef(0); // marca a última gravação local (guarda contra o refresh apagar dado recém-criado)
 
@@ -1299,55 +1300,75 @@ export default function App() {
     }
   },[]);
 
-  // Termo de uso: verifica 1x por workspace carregado; se ja aceitou esta versao, libera direto.
+
+  // Check localStorage first (super fast)
   useEffect(() => {
-    if (!SUPABASE_ENABLED || !supabase || !onlineUser || !onlineWorkspace) return;
+    if (!SUPABASE_ENABLED || !onlineUser) return;
+    const cached = localStorage.getItem(TERMS_STORAGE_KEY);
+    if (cached === onlineUser.email) {
+      console.log("[TERMS] Cached - já aceito");
+      setTermsAccepted(true);
+      return;
+    }
     let alive = true;
     (async () => {
       try {
-        const r = await supabase
-        console.log("[TERMS] Verificando aceite...", { email: onlineUser.email, TERMS_APP_NAME, TERMS_VERSION });
+        console.log("[TERMS] Verificando banco...", onlineUser.email);
+        const { data, error } = await supabase
           .from("terms_acceptance")
           .select("id")
-        console.log("[TERMS] Query result:", r);
           .eq("user_name", onlineUser.email)
           .eq("app_name", TERMS_APP_NAME)
           .eq("terms_version", TERMS_VERSION)
-          .limit(1);
-        if (!alive) return;
-        setTermsAccepted(Boolean(r.data && r.data.length));
-      } catch {
+          .maybeSingle();
+        if (error) {
+          console.error("[TERMS] Erro query:", error);
+          setTermsAccepted(false);
+          return;
+        }
+        const hasAccepted = !!data;
+        console.log("[TERMS] Resultado:", hasAccepted);
+        if (hasAccepted) localStorage.setItem(TERMS_STORAGE_KEY, onlineUser.email);
+        if (alive) setTermsAccepted(hasAccepted);
+      } catch (e) {
+        console.error("[TERMS] Erro:", e);
         if (alive) setTermsAccepted(false);
       }
     })();
     return () => { alive = false; };
-  }, [onlineUser, onlineWorkspace]);
-
+  }, [onlineUser]);
 
   const acceptTerms = useCallback(async () => {
     if (!supabase || !onlineUser) return { ok:false };
     try {
-      await supabase.from("terms_acceptance").upsert(
-        {
-          user_name: onlineUser.email,
-          app_name: TERMS_APP_NAME,
-          terms_version: TERMS_VERSION,
-          accepted_at: new Date().toISOString(),
-          ip_address: null,
-          user_agent: typeof navigator !== "undefined" ? navigator.userAgent : null,
-        },
-        { onConflict: "user_name,app_name,terms_version" }
-      );
-      setTermsAccepted(true);
-      return { ok:true };
-    } catch (e) {
-      // Se for erro de constraint duplicate key, considera como já aceito
-      if (e?.code === "23505" || e?.status === 409) {
+      console.log("[TERMS] Aceitando...");
+      const { error } = await supabase.from("terms_acceptance").insert({
+        user_name: onlineUser.email,
+        app_name: TERMS_APP_NAME,
+        terms_version: TERMS_VERSION,
+        accepted_at: new Date().toISOString(),
+        ip_address: null,
+        user_agent: typeof navigator !== "undefined" ? navigator.userAgent : null,
+      });
+      if (error?.code === "23505") {
+        console.log("[TERMS] Duplicate - ok");
+        localStorage.setItem(TERMS_STORAGE_KEY, onlineUser.email);
         setTermsAccepted(true);
         return { ok:true };
       }
-      return { ok:false, message: e?.message || "Erro ao registrar aceite." };
+      if (error) {
+        console.error("[TERMS] Erro:", error);
+        return { ok:false, message: error.message || "Erro ao registrar." };
+      }
+      console.log("[TERMS] Sucesso");
+      localStorage.setItem(TERMS_STORAGE_KEY, onlineUser.email);
+      setTermsAccepted(true);
+      return { ok:true };
+    } catch (e) {
+      console.error("[TERMS] Exception:", e);
+      return { ok:false, message: e?.message || "Erro ao registrar." };
     }
+  }, [onlineUser]);
   }, [onlineUser]);
     if (!supabase) return { ok:false, message:"Supabase não configurado." };
     const cleanEmail = String(email||"").trim().toLowerCase();
