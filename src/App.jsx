@@ -55,7 +55,7 @@ const STORAGE_KEY = "financas-casal-v3";
 const AUTH_KEY = "financas-casal-auth-v1";
 const SESSION_KEY = "financas-casal-session-v1";
 // Selo de versão: subir a cada melhoria/módulo (aparece na abertura, login e Admin).
-const APP_VERSION = "3.17";
+const APP_VERSION = "3.18";
 // Conta CRIADORA do app (dono): só ela vê Módulos, Supabase, estatísticas globais e backup.
 const CREATOR_EMAIL = "rubenspsilva.me@icloud.com";
 // URL de produção — pra onde o link de confirmação do e-mail deve voltar (não localhost).
@@ -927,14 +927,42 @@ function BrandMark({ size=48 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 64 64" style={{display:"block"}} aria-label="Prosperidade">
       <defs>
-        <linearGradient id="brandg" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#9A5F2B"/>
-          <stop offset="1" stopColor="#CF9E39"/>
+        <radialGradient id="brandbg" cx="32%" cy="26%" r="90%">
+          <stop offset="0%" stopColor="#F0C878"/>
+          <stop offset="45%" stopColor="#C68A34"/>
+          <stop offset="100%" stopColor="#6E4118"/>
+        </radialGradient>
+        <linearGradient id="brandring" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#FFEFCB" stopOpacity="0.65"/>
+          <stop offset="0.5" stopColor="#FFEFCB" stopOpacity="0.08"/>
+          <stop offset="1" stopColor="#3A2208" stopOpacity="0.35"/>
         </linearGradient>
+        <linearGradient id="brandarrow" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#FFFCF5"/>
+          <stop offset="1" stopColor="#FCE9C4"/>
+        </linearGradient>
+        <filter id="brandshadow" x="-50%" y="-50%" width="200%" height="200%">
+          <feDropShadow dx="0" dy="1.3" stdDeviation="1.4" floodColor="#3A2208" floodOpacity="0.5"/>
+        </filter>
+        <filter id="brandglow" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="2.2" result="b"/>
+          <feColorMatrix in="b" type="matrix" values="0 0 0 0 1  0 0 0 0 0.94  0 0 0 0 0.8  0 0 0 0.5 0"/>
+        </filter>
+        <clipPath id="brandRounded"><rect width="64" height="64" rx="18"/></clipPath>
       </defs>
-      <rect width="64" height="64" rx="18" fill="url(#brandg)"/>
-      <path d="M17 41 L28 30 L37 37 L47 23" fill="none" stroke="#FFF6E6" strokeWidth="5.5" strokeLinecap="round" strokeLinejoin="round"/>
-      <path d="M39 23 L47 23 L47 31" fill="none" stroke="#FFF6E6" strokeWidth="5.5" strokeLinecap="round" strokeLinejoin="round"/>
+      <rect width="64" height="64" rx="18" fill="url(#brandbg)"/>
+      <g clipPath="url(#brandRounded)">
+        <circle cx="20" cy="17" r="17" fill="#FFFFFF" opacity="0.10"/>
+        <g filter="url(#brandglow)" opacity="0.55">
+          <path d="M15.5 42 L27 30.5 L36.5 38 L47.5 22.5" fill="none" stroke="#FFF3D6" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round"/>
+        </g>
+        <g filter="url(#brandshadow)">
+          <path d="M17 41 L28 30 L37 37 L47 23" fill="none" stroke="url(#brandarrow)" strokeWidth="5.4" strokeLinecap="round" strokeLinejoin="round"/>
+          <path d="M39 23 L47 23 L47 31" fill="none" stroke="url(#brandarrow)" strokeWidth="5.4" strokeLinecap="round" strokeLinejoin="round"/>
+          <circle cx="17" cy="41" r="3.1" fill="url(#brandarrow)"/>
+        </g>
+      </g>
+      <rect x="1" y="1" width="62" height="62" rx="17" fill="none" stroke="url(#brandring)" strokeWidth="1.8"/>
     </svg>
   );
 }
